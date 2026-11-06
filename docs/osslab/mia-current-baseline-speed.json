@@ -1,0 +1,136 @@
+{
+  "label": "deployed-d8e5b28-tuned",
+  "measured_at": "2026-11-07T02:25:42.451814+08:00",
+  "method": "(completion_tokens - 1) / (last text event - first text event)",
+  "results": [
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 103,
+        "completion_tokens": 256,
+        "total_tokens": 359,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 0.3418508460163139,
+      "last_token_seconds": 3.0658974340185523,
+      "total_seconds": 3.0663072680472396,
+      "decode_tokens_per_second": 93.61073379696194,
+      "output_sha256": "d8b9f62bb0707c645cddfba76ca06b53d4ad33c2ed951a681d0cd0e3d08069c4",
+      "output_chars": 1208,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "short",
+      "trial": 1,
+      "prompt_sha256": "be85998d0d9905e221c6a8f995a4aba6827a07ce16c42f5a4b2fd2f3024c1efc",
+      "max_tokens": 256,
+      "measured_at": "2026-11-07T02:25:45.518697+08:00",
+      "matched": true
+    },
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 103,
+        "completion_tokens": 256,
+        "total_tokens": 359,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 0.2964700320153497,
+      "last_token_seconds": 3.2477255819831043,
+      "total_seconds": 3.2481634289724752,
+      "decode_tokens_per_second": 86.40390358699575,
+      "output_sha256": "f4f12939c346a53d016dc26ee62963dd6f3d129dd2144e4eb94e3307b4fe3ef1",
+      "output_chars": 1152,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "short",
+      "trial": 2,
+      "prompt_sha256": "593e2ccebb957c09814ab6b6dfb7bfbde07cdd718220933a1dd650c605e90141",
+      "max_tokens": 256,
+      "measured_at": "2026-11-07T02:25:48.768553+08:00",
+      "matched": true
+    },
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 103,
+        "completion_tokens": 256,
+        "total_tokens": 359,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 0.30016000499017537,
+      "last_token_seconds": 3.019660104007926,
+      "total_seconds": 3.0197363680345006,
+      "decode_tokens_per_second": 93.76723321028847,
+      "output_sha256": "18aaf34574e7a0c1a020fd018473c577bb355cda9c860ac98c8545d4ffa17ed9",
+      "output_chars": 1225,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "short",
+      "trial": 3,
+      "prompt_sha256": "fb1005048a42beb968bade17f59099fdad148b05eac6968f14f509077a150bdb",
+      "max_tokens": 256,
+      "measured_at": "2026-11-07T02:25:51.789807+08:00",
+      "matched": true
+    },
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1735,
+        "completion_tokens": 128,
+        "total_tokens": 1863,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 1.1056362939998507,
+      "last_token_seconds": 2.566448906029109,
+      "total_seconds": 2.566766951989848,
+      "decode_tokens_per_second": 86.93791315477523,
+      "output_sha256": "8a960591652b2228b9c0ffd7cd600d921c89a639e54da5bace0628ee71ff3ce6",
+      "output_chars": 591,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "context",
+      "trial": 1,
+      "prompt_sha256": "3be9dfb5d2b9969309c0c44e9419cf27acdb1fd29f76f7996271dc2881ba299b",
+      "max_tokens": 128,
+      "measured_at": "2026-11-07T02:25:54.357343+08:00",
+      "matched": true
+    }
+  ],
+  "matched": true,
+  "summaries": {
+    "context": {
+      "decode_tokens_per_second": 86.93791315477523,
+      "ttft_seconds": 1.1056362939998507,
+      "total_seconds": 2.566766951989848
+    },
+    "short": {
+      "decode_tokens_per_second": 93.61073379696194,
+      "ttft_seconds": 0.30016000499017537,
+      "total_seconds": 3.0663072680472396
+    }
+  }
+}

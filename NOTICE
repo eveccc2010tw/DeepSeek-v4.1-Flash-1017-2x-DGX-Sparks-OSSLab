@@ -58,3 +58,11 @@ Claim script (tools/claims)
 
 NVIDIA PyTorch container (nvcr.io/nvidia/pytorch:26.07-py3)
   The image's base, under NVIDIA's container license and its components' own licenses.
+
+OSSLab custom recipe additions
+  Four engine patches (0100-0103), native candidate and engine-only build helpers, matched benchmark and API acceptance
+  tools, example host specifications, and measured results are added by OSSLab. These additions are provided under
+  Apache-2.0. The existing upstream launchers and model-preparation guards are retained.
+  Responses buffer growth (0103) is ported from sehoon123's Tuned recipe at
+  171052a7d40745ba43f1d9fcb01cb3c2643d93923 (patch 0060), with a registered regression test.
+  Upstream TensorFold, MiaAI-Lab and other contributors retain their copyright and license.

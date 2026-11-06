@@ -1,0 +1,70 @@
+[
+  {
+    "scenario": "short",
+    "trial": 1,
+    "max_tokens": 256,
+    "expected_prompt_tokens": 103,
+    "prompt_sha256": "be85998d0d9905e221c6a8f995a4aba6827a07ce16c42f5a4b2fd2f3024c1efc",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a precise software assistant. Answer directly without internal reasoning."
+      },
+      {
+        "role": "user",
+        "content": "Run 0ff3985f1181-1. Write a complete Python module implementing a thread-safe LRU cache with capacity validation, get, put, delete, clear, statistics, context manager support, and an extensive unittest suite. Include type annotations and docstrings. Write at least 120 lines of actual code, without Markdown fences or an introductory explanation. Start directly with the imports and continue through the implementation."
+      }
+    ]
+  },
+  {
+    "scenario": "short",
+    "trial": 2,
+    "max_tokens": 256,
+    "expected_prompt_tokens": 103,
+    "prompt_sha256": "593e2ccebb957c09814ab6b6dfb7bfbde07cdd718220933a1dd650c605e90141",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a precise software assistant. Answer directly without internal reasoning."
+      },
+      {
+        "role": "user",
+        "content": "Run 0ff3985f1181-2. Write a complete Python module implementing a thread-safe LRU cache with capacity validation, get, put, delete, clear, statistics, context manager support, and an extensive unittest suite. Include type annotations and docstrings. Write at least 120 lines of actual code, without Markdown fences or an introductory explanation. Start directly with the imports and continue through the implementation."
+      }
+    ]
+  },
+  {
+    "scenario": "short",
+    "trial": 3,
+    "max_tokens": 256,
+    "expected_prompt_tokens": 103,
+    "prompt_sha256": "fb1005048a42beb968bade17f59099fdad148b05eac6968f14f509077a150bdb",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a precise software assistant. Answer directly without internal reasoning."
+      },
+      {
+        "role": "user",
+        "content": "Run 0ff3985f1181-3. Write a complete Python module implementing a thread-safe LRU cache with capacity validation, get, put, delete, clear, statistics, context manager support, and an extensive unittest suite. Include type annotations and docstrings. Write at least 120 lines of actual code, without Markdown fences or an introductory explanation. Start directly with the imports and continue through the implementation."
+      }
+    ]
+  },
+  {
+    "scenario": "context",
+    "trial": 1,
+    "max_tokens": 128,
+    "expected_prompt_tokens": 1735,
+    "prompt_sha256": "3be9dfb5d2b9969309c0c44e9419cf27acdb1fd29f76f7996271dc2881ba299b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a precise software assistant. Answer directly without internal reasoning."
+      },
+      {
+        "role": "user",
+        "content": "Run 22134fd0867f-1. Write a complete Python module implementing a thread-safe LRU cache with capacity validation, get, put, delete, clear, statistics, context manager support, and an extensive unittest suite. Include type annotations and docstrings. Write at least 120 lines of actual code, without Markdown fences or an introductory explanation. Start directly with the imports and continue through the implementation.\nThe module must also process these workload records, with usage examples after the implementation:\n[{\"request\": 0, \"worker\": 1, \"milliseconds\": 71, \"cache_hit\": true, \"bytes\": 1024}, {\"request\": 1, \"worker\": 2, \"milliseconds\": 202, \"cache_hit\": true, \"bytes\": 1527}, {\"request\": 2, \"worker\": 3, \"milliseconds\": 333, \"cache_hit\": false, \"bytes\": 2030}, {\"request\": 3, \"worker\": 4, \"milliseconds\": 464, \"cache_hit\": true, \"bytes\": 2533}, {\"request\": 4, \"worker\": 5, \"milliseconds\": 595, \"cache_hit\": true, \"bytes\": 3036}, {\"request\": 5, \"worker\": 6, \"milliseconds\": 726, \"cache_hit\": false, \"bytes\": 3539}, {\"request\": 6, \"worker\": 7, \"milliseconds\": 857, \"cache_hit\": true, \"bytes\": 4042}, {\"request\": 7, \"worker\": 0, \"milliseconds\": 988, \"cache_hit\": true, \"bytes\": 4545}, {\"request\": 8, \"worker\": 1, \"milliseconds\": 1119, \"cache_hit\": false, \"bytes\": 5048}, {\"request\": 9, \"worker\": 2, \"milliseconds\": 1250, \"cache_hit\": true, \"bytes\": 5551}, {\"request\": 10, \"worker\": 3, \"milliseconds\": 1381, \"cache_hit\": true, \"bytes\": 6054}, {\"request\": 11, \"worker\": 4, \"milliseconds\": 1512, \"cache_hit\": false, \"bytes\": 6557}, {\"request\": 12, \"worker\": 5, \"milliseconds\": 1643, \"cache_hit\": true, \"bytes\": 7060}, {\"request\": 13, \"worker\": 6, \"milliseconds\": 1774, \"cache_hit\": true, \"bytes\": 7563}, {\"request\": 14, \"worker\": 7, \"milliseconds\": 1905, \"cache_hit\": false, \"bytes\": 8066}, {\"request\": 15, \"worker\": 0, \"milliseconds\": 2036, \"cache_hit\": true, \"bytes\": 8569}, {\"request\": 16, \"worker\": 1, \"milliseconds\": 2167, \"cache_hit\": true, \"bytes\": 9072}, {\"request\": 17, \"worker\": 2, \"milliseconds\": 2298, \"cache_hit\": false, \"bytes\": 9575}, {\"request\": 18, \"worker\": 3, \"milliseconds\": 2429, \"cache_hit\": true, \"bytes\": 10078}, {\"request\": 19, \"worker\": 4, \"milliseconds\": 2560, \"cache_hit\": true, \"bytes\": 10581}, {\"request\": 20, \"worker\": 5, \"milliseconds\": 2691, \"cache_hit\": false, \"bytes\": 11084}, {\"request\": 21, \"worker\": 6, \"milliseconds\": 2822, \"cache_hit\": true, \"bytes\": 11587}, {\"request\": 22, \"worker\": 7, \"milliseconds\": 2953, \"cache_hit\": true, \"bytes\": 12090}, {\"request\": 23, \"worker\": 0, \"milliseconds\": 3084, \"cache_hit\": false, \"bytes\": 12593}, {\"request\": 24, \"worker\": 1, \"milliseconds\": 115, \"cache_hit\": true, \"bytes\": 13096}, {\"request\": 25, \"worker\": 2, \"milliseconds\": 246, \"cache_hit\": true, \"bytes\": 13599}, {\"request\": 26, \"worker\": 3, \"milliseconds\": 377, \"cache_hit\": false, \"bytes\": 14102}, {\"request\": 27, \"worker\": 4, \"milliseconds\": 508, \"cache_hit\": true, \"bytes\": 14605}, {\"request\": 28, \"worker\": 5, \"milliseconds\": 639, \"cache_hit\": true, \"bytes\": 15108}, {\"request\": 29, \"worker\": 6, \"milliseconds\": 770, \"cache_hit\": false, \"bytes\": 15611}, {\"request\": 30, \"worker\": 7, \"milliseconds\": 901, \"cache_hit\": true, \"bytes\": 16114}, {\"request\": 31, \"worker\": 0, \"milliseconds\": 1032, \"cache_hit\": true, \"bytes\": 16617}, {\"request\": 32, \"worker\": 1, \"milliseconds\": 1163, \"cache_hit\": false, \"bytes\": 17120}, {\"request\": 33, \"worker\": 2, \"milliseconds\": 1294, \"cache_hit\": true, \"bytes\": 17623}, {\"request\": 34, \"worker\": 3, \"milliseconds\": 1425, \"cache_hit\": true, \"bytes\": 18126}, {\"request\": 35, \"worker\": 4, \"milliseconds\": 1556, \"cache_hit\": false, \"bytes\": 18629}, {\"request\": 36, \"worker\": 5, \"milliseconds\": 1687, \"cache_hit\": true, \"bytes\": 19132}, {\"request\": 37, \"worker\": 6, \"milliseconds\": 1818, \"cache_hit\": true, \"bytes\": 19635}, {\"request\": 38, \"worker\": 7, \"milliseconds\": 1949, \"cache_hit\": false, \"bytes\": 20138}, {\"request\": 39, \"worker\": 0, \"milliseconds\": 2080, \"cache_hit\": true, \"bytes\": 20641}, {\"request\": 40, \"worker\": 1, \"milliseconds\": 2211, \"cache_hit\": true, \"bytes\": 21144}, {\"request\": 41, \"worker\": 2, \"milliseconds\": 2342, \"cache_hit\": false, \"bytes\": 21647}, {\"request\": 42, \"worker\": 3, \"milliseconds\": 2473, \"cache_hit\": true, \"bytes\": 22150}, {\"request\": 43, \"worker\": 4, \"milliseconds\": 2604, \"cache_hit\": true, \"bytes\": 22653}, {\"request\": 44, \"worker\": 5, \"milliseconds\": 2735, \"cache_hit\": false, \"bytes\": 23156}, {\"request\": 45, \"worker\": 6, \"milliseconds\": 2866, \"cache_hit\": true, \"bytes\": 23659}, {\"request\": 46, \"worker\": 7, \"milliseconds\": 2997, \"cache_hit\": true, \"bytes\": 24162}, {\"request\": 47, \"worker\": 0, \"milliseconds\": 28, \"cache_hit\": false, \"bytes\": 24665}]"
+      }
+    ]
+  }
+]

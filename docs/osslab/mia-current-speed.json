@@ -1,0 +1,136 @@
+{
+  "label": "Mia 31457d0 current+tuned",
+  "measured_at": "2026-11-07T02:56:47.653678+08:00",
+  "method": "(completion_tokens - 1) / (last text event - first text event)",
+  "results": [
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 103,
+        "completion_tokens": 256,
+        "total_tokens": 359,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 0.3463293730164878,
+      "last_token_seconds": 3.067129545030184,
+      "total_seconds": 3.0672390190302394,
+      "decode_tokens_per_second": 93.72242865277073,
+      "output_sha256": "d8b9f62bb0707c645cddfba76ca06b53d4ad33c2ed951a681d0cd0e3d08069c4",
+      "output_chars": 1208,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "short",
+      "trial": 1,
+      "prompt_sha256": "be85998d0d9905e221c6a8f995a4aba6827a07ce16c42f5a4b2fd2f3024c1efc",
+      "max_tokens": 256,
+      "measured_at": "2026-11-07T02:56:50.721412+08:00",
+      "matched": true
+    },
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 103,
+        "completion_tokens": 256,
+        "total_tokens": 359,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 0.30062908597756177,
+      "last_token_seconds": 3.2978961949702352,
+      "total_seconds": 3.298001546994783,
+      "decode_tokens_per_second": 85.07750251384863,
+      "output_sha256": "f4f12939c346a53d016dc26ee62963dd6f3d129dd2144e4eb94e3307b4fe3ef1",
+      "output_chars": 1152,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "short",
+      "trial": 2,
+      "prompt_sha256": "593e2ccebb957c09814ab6b6dfb7bfbde07cdd718220933a1dd650c605e90141",
+      "max_tokens": 256,
+      "measured_at": "2026-11-07T02:56:54.020311+08:00",
+      "matched": true
+    },
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 103,
+        "completion_tokens": 256,
+        "total_tokens": 359,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 0.30053930496796966,
+      "last_token_seconds": 3.0324453149805777,
+      "total_seconds": 3.0325438969885,
+      "decode_tokens_per_second": 93.34142502172801,
+      "output_sha256": "18aaf34574e7a0c1a020fd018473c577bb355cda9c860ac98c8545d4ffa17ed9",
+      "output_chars": 1225,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "short",
+      "trial": 3,
+      "prompt_sha256": "fb1005048a42beb968bade17f59099fdad148b05eac6968f14f509077a150bdb",
+      "max_tokens": 256,
+      "measured_at": "2026-11-07T02:56:57.053682+08:00",
+      "matched": true
+    },
+    {
+      "done": true,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1735,
+        "completion_tokens": 128,
+        "total_tokens": 1863,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "ttft_seconds": 1.1029951389646158,
+      "last_token_seconds": 2.574102653947193,
+      "total_seconds": 2.5742494119913317,
+      "decode_tokens_per_second": 86.32951616830269,
+      "output_sha256": "8a960591652b2228b9c0ffd7cd600d921c89a639e54da5bace0628ee71ff3ce6",
+      "output_chars": 591,
+      "reasoning_chars": 0,
+      "http_status": 200,
+      "scenario": "context",
+      "trial": 1,
+      "prompt_sha256": "3be9dfb5d2b9969309c0c44e9419cf27acdb1fd29f76f7996271dc2881ba299b",
+      "max_tokens": 128,
+      "measured_at": "2026-11-07T02:56:59.629293+08:00",
+      "matched": true
+    }
+  ],
+  "matched": true,
+  "summaries": {
+    "context": {
+      "decode_tokens_per_second": 86.32951616830269,
+      "ttft_seconds": 1.1029951389646158,
+      "total_seconds": 2.5742494119913317
+    },
+    "short": {
+      "decode_tokens_per_second": 93.34142502172801,
+      "ttft_seconds": 0.30062908597756177,
+      "total_seconds": 3.0672390190302394
+    }
+  }
+}

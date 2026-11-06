@@ -1,3 +1,17 @@
+# OSSLab custom recipe: DeepSeek V4.1 Flash on 2× DGX Spark
+
+This fork pins Mia recipe `31457d0` / TensorFold `fbbc971` and adds four deployed, tested patches: wide copy windows, RAM prefill checkpoints, SSE keepalive and Responses buffer growth.
+
+**[配方、設定範例、建置方式與驗收結果（繁體中文）](docs/osslab/README.zh-TW.md)** · [Source manifest](docs/osslab/manifest.json)
+
+The tested setup uses a 1M window, a 2,101,248-position sharded pool, 3 streams, 32-token copy windows and 32 GiB spill per rank. A fresh matched retest measured **92.47 tok/s** short decode and **86.11 tok/s** with a 1,735-token prompt. Three simultaneous streams reached **126.8 tok/s aggregate end-to-end throughput**. These measurements do not establish a speedup over the previous engine.
+
+The measured 32-row / EAQ v1.1 + prepared overlay setup uses the included candidate-container helper and host-spec examples. The upstream `start.sh` and model-preparation restrictions below are retained; see the fork guide for the tested entry point, prerequisites and unverified scope. Model weights, images, credentials and internal host configuration are not distributed.
+
+---
+
+## Original upstream README
+
 <h1 align="center">DeepSeek-V4.1-Flash-1017 EXL3 on 2x DGX Sparks with TensorFold</h1>
 
 <p align="center">

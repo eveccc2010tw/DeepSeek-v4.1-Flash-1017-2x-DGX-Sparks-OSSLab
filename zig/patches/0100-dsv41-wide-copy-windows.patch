@@ -1,0 +1,793 @@
+From b59815ed9a122024c0064ee49a58a4ea402155e3 Mon Sep 17 00:00:00 2001
+From: OSSLab <admin@asources.com>
+Date: Sat, 07 Nov 2026 02:24:45 +0800
+Subject: [PATCH] Port exact wide copy windows onto fbbc971 official stack
+
+---
+ zig/src/core/lanes/config.zig          |  14 ++
+ zig/src/core/lanes/copy_batch_test.zig | 172 +++++++++++++++++++++++++
+ zig/src/core/lanes/engine.zig          |  25 +++-
+ zig/src/core/lanes/fake.zig            |   4 +
+ zig/src/core/lanes/lanes.zig           |   1 +
+ zig/src/core/lanes/proposer.zig        |  15 ++-
+ zig/src/core/lanes/stream.zig          |   2 +
+ zig/src/core/lanes/windows.zig         |  12 +-
+ zig/src/families/dsv41/draft.zig       |   2 +-
+ zig/src/families/dsv41/lanes.zig       |  49 ++++++-
+ zig/src/families/dsv41/lanes_main.zig  |   4 +-
+ zig/src/families/dsv41/native.zig      |   3 +
+ zig/src/families/dsv41/prompt.zig      |  94 +++++++-------
+ 13 files changed, 342 insertions(+), 55 deletions(-)
+ create mode 100644 zig/src/core/lanes/copy_batch_test.zig
+
+diff --git a/zig/src/core/lanes/config.zig b/zig/src/core/lanes/config.zig
+index c948c9ae..bf71b908 100644
+--- a/zig/src/core/lanes/config.zig
++++ b/zig/src/core/lanes/config.zig
+@@ -36,6 +36,11 @@ pub const Model = struct {
+     draft_streams: bool = false, // the head drafts every stream of a shared round in one batch
+     head_trees: bool = false, // the head drafts trees of lanes (DraftRequest.lanes) and holds them
+     lane_costs: []const Cost = &.{}, // a lone stream's window ms by rows, up to its widest tree (timed at load)
++    copy_skips_head: bool = false, // a lone stream's fully accepted copy window skips the head's next pass
++    copy_batch_skips_head: bool = false, // extend that rule to fully accepted copy windows in shared rounds
++    copy_self_cap: u32 = 0, // a sampling stream's copy of its own reply at most this many tokens (0: no cap)
++    copy_multi: u32 = 0, // when every live stream copies, a copy of the prompt keeps its ramp, at most this many tokens (0: off)
++    enter_match: i64 = 8, // matching tokens a copy window needs
+ };
+ 
+ pub const Config = struct {
+@@ -71,6 +76,10 @@ pub const Config = struct {
+     mtp_step_ms: f64,
+     enter_match: i64 = 8, // matching tokens a copy needs (rejects coincidental indentation)
+     copy_rate: f64 = 0.94, // a copied token's chance of landing in allocation
++    copy_skips_head: bool = false, // Model.copy_skips_head
++    copy_batch_skips_head: bool = false, // Model.copy_batch_skips_head (requires copy_skips_head)
++    copy_self_cap: u32 = 0, // Model.copy_self_cap
++    copy_multi: u32 = 0, // Model.copy_multi
+     k: Constants = .{},
+ 
+     pub fn init(gpa: Allocator, m: Model, max_rows: u32, max_draft: u32) !Config {
+@@ -132,6 +141,11 @@ pub const Config = struct {
+             .draft_cal = m.draft_cal,
+             .cal_log = m.cal_log,
+             .copy_proposals = m.copy_proposals,
++            .copy_skips_head = m.copy_skips_head,
++            .copy_batch_skips_head = m.copy_batch_skips_head,
++            .copy_self_cap = m.copy_self_cap,
++            .copy_multi = m.copy_multi,
++            .enter_match = m.enter_match,
+         };
+     }
+ 
+diff --git a/zig/src/core/lanes/copy_batch_test.zig b/zig/src/core/lanes/copy_batch_test.zig
+new file mode 100644
+index 00000000..27eebd1d
+--- /dev/null
++++ b/zig/src/core/lanes/copy_batch_test.zig
+@@ -0,0 +1,172 @@
++//! Lone and shared copy windows can omit speculative heads, never target verification or rollback.
++const std = @import("std");
++const config = @import("config.zig");
++const Engine = @import("engine.zig").Engine;
++const sm = @import("stream.zig");
++const fake = @import("fake.zig");
++const proposer = @import("proposer.zig");
++const Sampling = @import("sampling.zig").Sampling;
++const gpa = std.testing.allocator;
++
++const Mode = enum { copies, transition, mixed, rejected, budget, no_copies, single_copy_end };
++
++/// Deterministic proposer with misses and abrupt copy-end; proposals still go through the history-keyed fake target.
++const Copies = struct {
++    enabled: bool = true,
++    stop: usize = std.math.maxInt(usize),
++    reject: bool = false,
++    sampling: ?Sampling = null,
++    out: [32]u32 = undefined,
++
++    fn interface(c: *Copies) proposer.Proposer {
++        return .{ .ptr = c, .vtable = &.{ .propose = propose, .last_match = match } };
++    }
++    fn match(_: *anyopaque) i64 {
++        return 64;
++    }
++    fn propose(ptr: *anyopaque, context: []const u32, max: i64) ![]const u32 {
++        const c: *Copies = @ptrCast(@alignCast(ptr));
++        if (!c.enabled or context.len >= c.stop or max <= 0) return &.{};
++        var h: std.ArrayList(u32) = .empty;
++        defer h.deinit(gpa);
++        try h.appendSlice(gpa, context);
++        const n: usize = @intCast(@min(max, c.out.len));
++        for (c.out[0..n], 0..) |*t, i| {
++            t.* = fake.next(h.items, c.sampling, h.items.len);
++            if (c.reject and i == 0) t.* = (t.* + 1) % fake.vocab;
++            try h.append(gpa, t.*);
++        }
++        return c.out[0..n];
++    }
++};
++
++const Result = struct {
++    tokens: [4][]u32 = .{ &.{}, &.{}, &.{}, &.{} },
++    reasons: [4]sm.Reason = undefined,
++    calls: usize = 0,
++    drafted: usize = 0,
++    fn deinit(r: Result) void {
++        for (r.tokens) |t| gpa.free(t);
++    }
++};
++
++fn run(n: usize, mode: Mode, sampled: bool, skip: bool, master: bool) !Result {
++    var costs: [16]config.Cost = undefined;
++    for (&costs, 1..) |*c, w| c.* = .{ .width = @intCast(w), .ms = 5.0 + 0.8 * @as(f64, @floatFromInt(w)) };
++    var cfg = try config.Config.init(gpa, .{
++        .exact_width = 16,
++        .first_copy_rows = 6,
++        .gpu_tokens = true,
++        .mtp = true,
++        .speculate = true,
++        .speculate_early = false,
++        .drafts = 4,
++        .window_costs = &costs,
++        .mtp_step_ms = 0.5,
++        .hidden_rows = true,
++        .batch_rows = 32,
++        .max_streams = 4,
++        .draft_streams = true,
++        .copy_skips_head = master,
++        .copy_batch_skips_head = skip,
++        .copy_multi = 15,
++    }, 16, 15);
++    defer cfg.deinit(gpa);
++    var target: fake.Fake = .{ .gpa = gpa };
++    defer target.deinit();
++    var clock: fake.FixedClock = .{};
++    var e = Engine.init(gpa, &cfg, target.backend(), clock.clock());
++    defer e.deinit();
++    var copies: [4]Copies = undefined;
++    var streams: [4]sm.Stream = undefined;
++    var made: usize = 0;
++    defer for (streams[0..made]) |*s| s.deinit(gpa);
++    const prompt = [_]u32{ 3, 1, 4, 1, 5, 9, 2, 6 };
++    for (0..n) |i| {
++        const sampling: ?Sampling = if (sampled) .{ .seed = 17 + i, .temperature = 1.0 } else null;
++        copies[i] = .{
++            .enabled = mode != .no_copies and (mode != .mixed or i % 2 == 0),
++            .stop = if (mode == .transition) prompt.len + 25 + i else if (mode == .single_copy_end) prompt.len + 7 else std.math.maxInt(usize),
++            .reject = mode == .rejected,
++            .sampling = sampling,
++        };
++        streams[i] = try sm.Stream.init(gpa, .{
++            .id = "copy-test",
++            .prompt = &prompt,
++            .max_new = @intCast(56 + i * 11),
++            .eos = &.{},
++            .sampling = sampling,
++            .drafts = true,
++            .proposer = copies[i].interface(),
++            .loop_guard = false,
++            .think_budget = if (mode == .budget and i % 2 == 0) 17 else 0,
++            .think_close = &.{ 90, 91, 92 },
++            .think_end = 91,
++        });
++        made += 1;
++        try e.addStream(&streams[i]);
++    }
++    var steps: usize = 0;
++    while (e.activeCount() > 0 and steps < 512) : (steps += 1) try e.step();
++    try std.testing.expectEqual(@as(usize, 0), e.activeCount());
++    var result: Result = .{ .calls = target.draft_calls, .drafted = target.drafted_streams };
++    errdefer result.deinit();
++    for (streams[0..n], 0..) |*s, i| {
++        result.tokens[i] = try gpa.dupe(u32, s.emitted());
++        result.reasons[i] = s.reason;
++    }
++    return result;
++}
++
++fn compare(a: Result, b: Result, n: usize) !void {
++    for (0..n) |i| {
++        try std.testing.expectEqualSlices(u32, a.tokens[i], b.tokens[i]);
++        try std.testing.expectEqual(a.reasons[i], b.reasons[i]);
++    }
++}
++
++test "lone stream copy skip preserves tokens/finishes and retains drafts on single_copy_end" {
++    for ([_]bool{ false, true }) |sampled| {
++        for (std.enums.values(Mode)) |mode| {
++            const baseline = try run(1, mode, sampled, false, false);
++            defer baseline.deinit();
++            const candidate = try run(1, mode, sampled, false, true);
++            defer candidate.deinit();
++            try compare(baseline, candidate, 1);
++            if (mode == .rejected or mode == .no_copies or mode == .single_copy_end) {
++                try std.testing.expectEqual(baseline.drafted, candidate.drafted);
++                try std.testing.expectEqual(baseline.calls, candidate.calls);
++            } else {
++                try std.testing.expect(candidate.drafted < baseline.drafted);
++            }
++        }
++    }
++}
++
++test "batch copy skip preserves tokens/finishes through misses, cuts, mixed streams and copy-to-head transitions" {
++    for ([_]usize{ 2, 4 }) |n| for ([_]bool{ false, true }) |sampled| {
++        for (std.enums.values(Mode)) |mode| {
++            const baseline = try run(n, mode, sampled, false, true);
++            defer baseline.deinit();
++            const candidate = try run(n, mode, sampled, true, true);
++            defer candidate.deinit();
++            try compare(baseline, candidate, n);
++            if (mode == .rejected or mode == .no_copies or mode == .single_copy_end) {
++                try std.testing.expectEqual(baseline.drafted, candidate.drafted);
++                try std.testing.expectEqual(baseline.calls, candidate.calls);
++            } else {
++                try std.testing.expect(candidate.drafted < baseline.drafted);
++            }
++        }
++    };
++}
++
++test "batch skip is opt-in and requires the existing copy-skip master switch" {
++    const baseline = try run(4, .copies, true, false, false);
++    defer baseline.deinit();
++    const disabled = try run(4, .copies, true, true, false);
++    defer disabled.deinit();
++    try compare(baseline, disabled, 4);
++    try std.testing.expectEqual(baseline.drafted, disabled.drafted);
++    try std.testing.expectEqual(baseline.calls, disabled.calls);
++}
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index 97e6e976..a50ee023 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -35,6 +35,8 @@ pub const Engine = struct {
+     accepted: u64 = 0,
+     shared_rounds: u64 = 0,
+     alone: bool = true, // this step has one live stream: its copies may take their ramp
++    live_n: usize = 1, // this step's live streams (Config.copy_multi shares the rows out by them)
++    all_copy: bool = false, // every live stream's last round was a copy (Config.copy_multi: no stream that drafts is slowed)
+     steps: u64 = 0,
+     arena: std.heap.ArenaAllocator, // a round's temporaries
+     unread: std.ArrayList(Unread) = .empty, // queued draws the log reads at the step's end
+@@ -244,6 +246,12 @@ pub const Engine = struct {
+             live.shrinkRetainingCapacity(kept);
+         }
+         e.alone = live.items.len == 1;
++        e.live_n = live.items.len;
++        e.all_copy = true;
++        for (live.items) |ls| if (!ls.last_copy) {
++            e.all_copy = false;
++            break;
++        };
+         if (live.items.len > 1 and e.cfg.family_streams) {
+             const chosen = try e.takeTurns(live.items);
+             e.shared_rounds += 1;
+@@ -326,7 +334,10 @@ pub const Engine = struct {
+         const o = try e.conclude(s, plan, out[0].sampled, tokens, parents, windows[0].positions);
+         if (o.path.len < rows or plan.parents != null) try e.backend.keep(&windows, &.{o.path});
+         const held_levels = s.held_levels;
+-        if (e.cfg.family_mtp and s.drafts) {
++        // A fully accepted lone copy window skips head drafting only when copyAhead confirms another copy continuation.
++        const next_who = win.who(s);
++        const copy_next = e.cfg.copy_skips_head and e.alone and !early and plan.kind == .copy and o.path.len == rows and o.cut == null and !s.finished and win.copyAhead(e, &next_who);
++        if (e.cfg.family_mtp and s.drafts and !copy_next) {
+             if (early and o.cut == null) {
+                 var w = win.who(s);
+                 const d: u32 = @intCast(try e.rule.headDepth(&w, null, win.probe(e)));
+@@ -386,8 +397,13 @@ pub const Engine = struct {
+             p.stream.min_rows = if (p.stream.min_rows == 0) rows else @min(p.stream.min_rows, rows);
+         }
+         var heads: std.ArrayList(usize) = .empty;
+-        for (plans, 0..) |p, i| {
+-            if (e.cfg.family_mtp and p.stream.drafts) try heads.append(a, i);
++        for (plans, windows, outcomes, 0..) |p, w, o, i| {
++            // Confirm continuation via copyAhead before omitting head drafts so leaving a copy span keeps MTP drafts.
++            const next_who = win.who(p.stream);
++            const copy_next = e.cfg.copy_skips_head and e.cfg.copy_batch_skips_head and
++                p.kind == .copy and o.path.len == w.rows() and o.cut == null and !p.stream.finished and
++                win.copyAhead(e, &next_who);
++            if (e.cfg.family_mtp and p.stream.drafts and !copy_next) try heads.append(a, i);
+         }
+         const whos = try a.alloc(depth.Who, heads.items.len);
+         for (whos, heads.items) |*w, i| w.* = win.who(plans[i].stream);
+@@ -417,6 +433,7 @@ pub const Engine = struct {
+     fn conclude(e: *Engine, s: *Stream, p: Plan, sampled: []const u32, tokens: []const u32, parents: []const i32, positions: []const u64) !Outcome {
+         const a = e.arena.allocator();
+         const rows = tokens.len;
++        s.last_copy = p.kind == .copy and rows > 1;
+         var path: []u32 = undefined;
+         var committed: std.ArrayList(u32) = .empty;
+         if (p.kind == .forced) {
+@@ -436,7 +453,7 @@ pub const Engine = struct {
+                 s.accepted += kept;
+                 if (p.kind == .copy) {
+                     if (s.proposer) |pr| pr.observe(@intCast(rows - 1), @intCast(kept));
+-                    if (e.alone) {
++                    if (e.alone or e.cfg.copy_multi > 0) {
+                         const width = s.copy_width orelse e.cfg.first_copy;
+                         s.copy_width = if (kept == rows - 1) @min(e.cfg.max_copy, 2 * width + 1) else e.cfg.first_copy;
+                     }
+diff --git a/zig/src/core/lanes/fake.zig b/zig/src/core/lanes/fake.zig
+index 4cf9c514..fd6cc02a 100644
+--- a/zig/src/core/lanes/fake.zig
++++ b/zig/src/core/lanes/fake.zig
+@@ -31,6 +31,8 @@ pub const Fake = struct {
+     lanes: std.AutoHashMapUnmanaged(*Stream, Lane) = .empty,
+     drawn: std.ArrayList(u32) = .empty, // handle -> token
+     rounds: u64 = 0,
++    draft_calls: usize = 0, // test instrumentation: calls and nonzero-depth streams actually drafted
++    drafted_streams: usize = 0,
+     cycle_after: ?usize = null,
+     probe_prompt: usize = 0,
+     pattern: []const u32 = &.{ 11, 12, 13 },
+@@ -226,7 +228,9 @@ pub const Fake = struct {
+ 
+     fn draft(ptr: *anyopaque, requests: []const be.DraftRequest) anyerror!void {
+         const x = self(ptr);
++        x.draft_calls += 1;
+         for (requests) |r| {
++            x.drafted_streams += @intFromBool(r.depth > 0);
+             const l = x.lane(r.stream);
+             // the head reads the last verify's kept rows (a shared round drafts before its rollback)
+             var guess: std.ArrayList(u32) = .empty;
+diff --git a/zig/src/core/lanes/lanes.zig b/zig/src/core/lanes/lanes.zig
+index f07d04e8..7059ad65 100644
+--- a/zig/src/core/lanes/lanes.zig
++++ b/zig/src/core/lanes/lanes.zig
+@@ -32,6 +32,7 @@ pub const SuffixLookup = proposer.SuffixLookup;
+ test {
+     std.testing.refAllDecls(@This());
+     _ = @import("engine_test.zig");
++    _ = @import("copy_batch_test.zig");
+     _ = @import("gpu_full_test.zig");
+     _ = @import("calibration_test.zig");
+ }
+diff --git a/zig/src/core/lanes/proposer.zig b/zig/src/core/lanes/proposer.zig
+index f49626e7..726ea97e 100644
+--- a/zig/src/core/lanes/proposer.zig
++++ b/zig/src/core/lanes/proposer.zig
+@@ -11,6 +11,7 @@ pub const Proposer = struct {
+         propose: *const fn (ptr: *anyopaque, context: []const u32, max_draft: i64) anyerror![]const u32,
+         last_match: *const fn (ptr: *anyopaque) i64,
+         observe: ?*const fn (ptr: *anyopaque, proposed: i64, accepted: i64) void = null,
++        last_from: ?*const fn (ptr: *anyopaque) i64 = null,
+     };
+ 
+     /// Tokens valid until the next `propose`.
+@@ -25,6 +26,11 @@ pub const Proposer = struct {
+     pub fn observe(p: Proposer, proposed: i64, accepted: i64) void {
+         if (p.vtable.observe) |f| f(p.ptr, proposed, accepted);
+     }
++
++    /// Where in the context the last proposal's copy starts (null: the proposer does not say).
++    pub fn lastFrom(p: Proposer) ?i64 {
++        return if (p.vtable.last_from) |f| f(p.ptr) else null;
++    }
+ };
+ 
+ pub const max_ngram = 8;
+@@ -55,6 +61,7 @@ pub const SuffixLookup = struct {
+     accepted_tokens: i64 = 0,
+     silenced_rounds: i64 = 0,
+     last_match: i64 = 0,
++    last_from: i64 = -1, // the context position the last proposal copies from
+     last_confident: bool = false,
+ 
+     pub fn init(gpa: Allocator, params: Params) !SuffixLookup {
+@@ -76,7 +83,7 @@ pub const SuffixLookup = struct {
+         return .{ .ptr = s, .vtable = &vtable };
+     }
+ 
+-    pub const vtable: Proposer.VTable = .{ .propose = proposeFn, .last_match = lastMatchFn, .observe = observeFn };
++    pub const vtable: Proposer.VTable = .{ .propose = proposeFn, .last_match = lastMatchFn, .observe = observeFn, .last_from = lastFromFn };
+ 
+     fn proposeFn(ptr: *anyopaque, context: []const u32, max_draft: i64) anyerror![]const u32 {
+         const s: *SuffixLookup = @ptrCast(@alignCast(ptr));
+@@ -88,6 +95,11 @@ pub const SuffixLookup = struct {
+         return s.last_match;
+     }
+ 
++    fn lastFromFn(ptr: *anyopaque) i64 {
++        const s: *SuffixLookup = @ptrCast(@alignCast(ptr));
++        return s.last_from;
++    }
++
+     fn observeFn(ptr: *anyopaque, proposed: i64, accepted: i64) void {
+         const s: *SuffixLookup = @ptrCast(@alignCast(ptr));
+         s.observe(proposed, accepted) catch {};
+@@ -165,6 +177,7 @@ pub const SuffixLookup = struct {
+         }
+         s.last_confident = false;
+         s.last_match = best_len;
++        s.last_from = best_end;
+         if (best_end < 0 or best_len < s.params.min_match) return s.out.items;
+         s.last_confident = best_len >= s.params.confident_match;
+         const from: usize = @intCast(best_end);
+diff --git a/zig/src/core/lanes/stream.zig b/zig/src/core/lanes/stream.zig
+index 134debd7..454dac58 100644
+--- a/zig/src/core/lanes/stream.zig
++++ b/zig/src/core/lanes/stream.zig
+@@ -226,6 +226,7 @@ pub const Stream = struct {
+     cal_c: f64 = 1.0, // the per-draft survival the last verified round solved for
+     cal_rounds: u64 = 0, // calibrated verifies, for the log
+     copy_width: ?u32 = null,
++    last_copy: bool = false, // its last round was a copy window (Config.copy_multi)
+     gate: ?call_gate.Gate = null,
+ 
+     pub fn init(gpa: Allocator, spec: Spec) !Stream {
+@@ -273,6 +274,7 @@ pub const Stream = struct {
+         s.granted = null;
+         s.cal_n = 0;
+         s.copy_width = null;
++        s.last_copy = false;
+     }
+ 
+     pub fn dropHeld(s: *Stream, gpa: Allocator) void {
+diff --git a/zig/src/core/lanes/windows.zig b/zig/src/core/lanes/windows.zig
+index 0b1a9688..4ff10b53 100644
+--- a/zig/src/core/lanes/windows.zig
++++ b/zig/src/core/lanes/windows.zig
+@@ -134,9 +134,19 @@ fn headTrunk(e: *Engine, s: *Stream, p: Plan, levels: usize) !?fill.Trunk {
+ pub fn copyProposal(e: *Engine, s: *Stream) ![]const u32 {
+     const p = s.proposer orelse return &.{};
+     if (!copyAllowed(e.cfg.copy_proposals, e.cfg.max_copy, s.force.items.len)) return &.{};
+-    const width: u32 = if (e.alone) (s.copy_width orelse e.cfg.first_copy) else e.cfg.first_copy;
++    // Config.copy_multi: when all live streams copy, share batch_rows evenly up to copy_multi without slowing drafters.
++    const multi = !e.alone and e.cfg.copy_multi > 0 and e.all_copy;
++    const share: u32 = @intCast(@max(@as(usize, 2), e.cfg.batch_rows / @max(@as(usize, 1), e.live_n)) - 1);
++    const width: u32 = if (e.alone) (s.copy_width orelse e.cfg.first_copy) else if (multi) @min(@min(s.copy_width orelse e.cfg.first_copy, e.cfg.copy_multi), share) else e.cfg.first_copy;
+     const copied = p.propose(s.context.items, @min(@as(i64, width), s.draftRoom() - 1)) catch return &.{};
+     if (copied.len < 2 or p.lastMatch() < e.cfg.enter_match) return &.{};
++    if (multi) if (p.lastFrom()) |from| {
++        if (from >= @as(i64, @intCast(s.prompt_len)) and copied.len > e.cfg.first_copy) return copied[0..e.cfg.first_copy];
++    };
++    // Cap sampled self-reply copies (copy_self_cap) so repetitive replies exit copy mode sooner than prompt copies.
++    if (e.cfg.copy_self_cap > 0) if (s.sampling) |sm| if (sm.temperature > 0) if (p.lastFrom()) |from| {
++        if (from >= @as(i64, @intCast(s.prompt_len)) and copied.len > e.cfg.copy_self_cap) return copied[0..e.cfg.copy_self_cap];
++    };
+     return copied;
+ }
+ 
+diff --git a/zig/src/families/dsv41/draft.zig b/zig/src/families/dsv41/draft.zig
+index 5ac250b9..de1483c1 100644
+--- a/zig/src/families/dsv41/draft.zig
++++ b/zig/src/families/dsv41/draft.zig
+@@ -39,7 +39,7 @@ pub const max_rows = max_streams * 5; // every stream of the pool, a five-row bl
+ /// sparse_attn's pick list of a single-split call: padded with -1 to a multiple of 16 entries.
+ const pick_pad = 16;
+ /// dspark.py: ring_size = window + 16.
+-pub const ring_extra = 16;
++pub const ring_extra = 48; // prompt.ring_extra's (the drafter's absorbs follow the target's copy windows)
+ /// The stages (DSpark blocks) and a stream's block rows at most.
+ pub const max_stages = 4;
+ pub const max_block = 8;
+diff --git a/zig/src/families/dsv41/lanes.zig b/zig/src/families/dsv41/lanes.zig
+index 40006aae..3385bb09 100644
+--- a/zig/src/families/dsv41/lanes.zig
++++ b/zig/src/families/dsv41/lanes.zig
+@@ -44,6 +44,22 @@ comptime {
+ 
+ /// A window of the pending row and the drafter's block: the widest one the gates checked row for row.
+ pub const window_rows = 6;
++/// A lone stream's widest copy window (TF_DS_COPY_ROWS), bounded by TF_DS_ROUND_ROWS and RING_EXTRA (48).
++pub const max_window = 48;
++
++/// TF_DS_COPY_MULTI=N (1..47; unset: off): when all live streams copy, prompt copies ramp up to N tokens side by side.
++fn copyMulti() u32 {
++    const v = getenv("TF_DS_COPY_MULTI") orelse return 0;
++    const x = std.fmt.parseInt(u32, v, 10) catch return 0;
++    return if (x < 1 or x > 47) 0 else x;
++}
++
++/// TF_DS_COPY_SELF_CAP=N (1..47; unset: no cap): cap a sampling stream's copy windows over its own reply to N tokens.
++fn copySelfCap() u32 {
++    const v = getenv("TF_DS_COPY_SELF_CAP") orelse return 0;
++    const x = std.fmt.parseInt(u32, v, 10) catch return 0;
++    return if (x < 1 or x > 47) 0 else x;
++}
+ 
+ /// The image rows a fill_images frame carries at most.
+ pub const image_piece = 32 << 10;
+@@ -452,7 +468,7 @@ pub const Lanes = struct {
+     step: u64 = 0,
+     wire: Wire = .{},
+     streams: std.AutoHashMapUnmanaged(*const lanes.Stream, Lane) = .empty,
+-    wc: [window_rows]lanes.config.Cost = undefined, // the window costs (init)
++    wc: [max_window]lanes.config.Cost = undefined, // the window costs (init)
+     sc: [max_rows]lanes.config.Cost = undefined, // the shared forwards' costs (init)
+     used: [max_streams]bool = @splat(false),
+     seqs: [max_streams]std.ArrayList(i32) = @splat(.empty),
+@@ -463,6 +479,10 @@ pub const Lanes = struct {
+     draft_cal: f64 = 0.0, // TF_DS_T25_DRAFT_CAL: the weight of a round in each stream's draft-survival calibration (0: off)
+     cal_log: u32 = 0, // TF_DS_T25_CAL_LOG: every n-th calibrated verify of a stream prints to stderr (0: off)
+     no_copies: bool = false, // TF_DS_NO_COPIES=1: a drafted stream proposes no suffix-lookup copy windows
++    copy_rows: usize = window_rows, // TF_DS_COPY_ROWS: a lone stream's widest copy window (6: the stock width, off)
++    copy_skip: bool = false, // TF_DS_COPY_SKIP=1: no drafter pass after a lone stream's fully accepted copy window
++    copy_batch_skip: bool = false, // TF_DS_COPY_BATCH_SKIP=1: the same rule for shared copy windows (opt-in)
++    enter_match: i64 = 8, // TF_DS_COPY_ENTER: matching tokens a copy window needs
+     drawn: [ring]u32 = undefined,
+     next: u64 = 0,
+     snaps: std.ArrayList(*Snap) = .empty, // kept prompt states, oldest first
+@@ -486,6 +506,21 @@ pub const Lanes = struct {
+         return ln;
+     }
+ 
++    /// The served policy's TF_DS_* switches (native.zig's serve and tf-dsv41-lanes alike).
++    pub fn applyEnv(self: *Lanes) !void {
++        if (getenv("TF_DS_FIX_K")) |t| self.fix_k = std.fmt.parseInt(usize, t, 10) catch return error.BadFixK;
++        if (getenv("TF_DS_COPY_ROWS")) |t| {
++            self.copy_rows = std.fmt.parseInt(usize, t, 10) catch return error.BadCopyRows;
++            if (self.copy_rows < window_rows or self.copy_rows > max_window or self.copy_rows > self.m.eng.round_rows) return error.BadCopyRows;
++        }
++        if (getenv("TF_DS_COPY_SKIP")) |t| self.copy_skip = std.mem.eql(u8, t, "1");
++        if (getenv("TF_DS_COPY_BATCH_SKIP")) |t| self.copy_batch_skip = std.mem.eql(u8, t, "1");
++        if (getenv("TF_DS_COPY_ENTER")) |t| {
++            self.enter_match = std.fmt.parseInt(i64, t, 10) catch return error.BadCopyRows;
++            if (self.enter_match < 2 or self.enter_match > 64) return error.BadCopyRows;
++        }
++    }
++
+     /// Tells rank 1 to stop, then frees the host state (the model is the caller's).
+     pub fn deinit(self: *Lanes) void {
+         self.stopKv();
+@@ -522,13 +557,19 @@ pub const Lanes = struct {
+     pub fn facts(self: *const Lanes) lanes.Model {
+         const drafting = self.m.drafting();
+         return .{
+-            .exact_width = window_rows,
++            .exact_width = @intCast(@max(window_rows, self.copy_rows)),
++            .first_copy_rows = if (self.copy_rows > window_rows) @as(u32, window_rows) else 0,
++            .copy_skips_head = self.copy_skip,
++            .copy_batch_skips_head = self.copy_batch_skip,
++            .copy_self_cap = copySelfCap(),
++            .copy_multi = copyMulti(),
++            .enter_match = self.enter_match,
+             .gpu_tokens = false,
+             .mtp = drafting,
+             .speculate = drafting,
+             .speculate_early = false,
+             .drafts = if (self.m.dr) |dr| @intCast(dr.n) else 1,
+-            .window_costs = self.wc[0..],
++            .window_costs = self.wc[0..@max(window_rows, self.copy_rows)],
+             .mtp_step_ms = draft.draft_ms,
+             .solo_head_overhead_ms = if (drafting and self.solo_overhead) draft.draft_ms else null, // opt-in: the Python engine's fixed draft allowance
+             .draft_cal = self.draft_cal,
+@@ -1123,7 +1164,7 @@ pub const Lanes = struct {
+             if (w.parents != null) return error.TreesNotBuilt;
+             const l = self.streams.getPtr(w.stream) orelse return error.UnknownStream;
+             const rows = w.rows();
+-            if (rows > window_rows) return error.WindowTooWide;
++            if (rows > @max(window_rows, self.copy_rows)) return error.WindowTooWide;
+             const start: usize = @intCast(w.stream.cache_len);
+             for (w.positions, 0..) |p, r| if (p != start + 1 + r) return error.PositionMismatch;
+             if (w.held > l.nheld) return error.HeldMismatch;
+diff --git a/zig/src/families/dsv41/lanes_main.zig b/zig/src/families/dsv41/lanes_main.zig
+index a6ec0aef..af955544 100644
+--- a/zig/src/families/dsv41/lanes_main.zig
++++ b/zig/src/families/dsv41/lanes_main.zig
+@@ -112,6 +112,7 @@ pub fn main(init: std.process.Init) !u8 {
+         .master = try dsv41.link.parseIp(args[5]),
+         .port = try std.fmt.parseInt(u16, args[6], 10),
+         .kit_dir = args[7],
++        .round_rows = if (dsv41.native.getenvFn("TF_DS_ROUND_ROWS")) |v| std.fmt.parseInt(usize, v, 10) catch return error.BadRoundRows else dsv41.round.default_rows,
+     };
+     o.window_rows = try dsv41.prompt_rows.windowFromEnv();
+     o.gemm_rows = try dsv41.prompt_rows.gemmFromEnv();
+@@ -295,7 +296,8 @@ pub fn main(init: std.process.Init) !u8 {
+         ln.spill = null;
+     };
+     try ln.startKv();
+-    ln.fix_k = fix_k;
++    try ln.applyEnv(); // the served policy's TF_DS_* switches, as native.zig's serve reads them
++    if (fix_k) |k| ln.fix_k = k;
+     var snap_vt: pcache.Snapshots.VTable = undefined;
+     var store_v: pcache.Store = undefined;
+     var store: ?*pcache.Store = null;
+diff --git a/zig/src/families/dsv41/native.zig b/zig/src/families/dsv41/native.zig
+index 51644e44..210a892f 100644
+--- a/zig/src/families/dsv41/native.zig
++++ b/zig/src/families/dsv41/native.zig
+@@ -265,6 +265,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
+     st.lanes.draft_cal = if (getenv("TF_DS_T25_DRAFT_CAL")) |v| lanes_mod.parseCalWeight(v) catch return error.BadDraftCal else 0.0;
+     st.lanes.cal_log = if (getenv("TF_DS_T25_CAL_LOG")) |v| std.fmt.parseInt(u32, std.mem.trim(u8, v, " "), 10) catch return error.BadCalLog else 0;
+     st.lanes.no_copies = if (getenv("TF_DS_NO_COPIES")) |v| !std.mem.eql(u8, v, "0") else false;
++    try st.lanes.applyEnv(); // every TF_DS_* switch of the served policy (lanes.zig, tf-dsv41-lanes reads them alike)
+     // a vision checkpoint's tower on this rank, from the kit's vision/ (torch's attention cubin, the routing bias)
+     st.vision = null;
+     if (st.m.cfg.vision) st.vision = try vision_mod.Vision.open(gpa, io, st.m, dir, getenv("TF_DS_KIT").?);
+@@ -646,6 +647,8 @@ pub fn explain(_: ?*anyopaque, err: anyerror) ?[]const u8 {
+         error.BadPromptGemmRows => rows_mod.gemm_hint,
+         error.PromptRowsMismatch => "TF_DS_PROMPT_WINDOW_ROWS / TF_DS_PROMPT_GEMM_ROWS: the ranks run different prompt paths; set them alike on every rank (tf-dsv41-lanes reads them too)",
+         error.BadRoundRows => "TF_DS_ROUND_ROWS: a round's rows at most, 16 .. 48",
++        error.BadCopyRows => "TF_DS_COPY_ROWS: a lone stream's widest copy window, 6 .. min(48, TF_DS_ROUND_ROWS); TF_DS_COPY_ENTER: matching tokens, 2 .. 64",
++        error.BadFixK => "TF_DS_FIX_K: fixed draft verification depth, a non-negative integer",
+         error.BadGraphCap => "TF_DS_GRAPH_CAP: the captured CUDA graphs kept at most, a count (0: all)",
+         error.BadPlainRows => "TF_DS_PLAIN_ROWS: the rows a mixed pack's plain linear runs over, 0 (the round's own) or a count up to TF_DS_ROUND_ROWS",
+         error.BadStreams => "TF_DS_STREAMS: the pool's streams, 1 .. 16",
+diff --git a/zig/src/families/dsv41/prompt.zig b/zig/src/families/dsv41/prompt.zig
+index d77e94b1..4cad9f17 100644
+--- a/zig/src/families/dsv41/prompt.zig
++++ b/zig/src/families/dsv41/prompt.zig
+@@ -48,8 +48,10 @@ const key_elems: usize = 1 << 24;
+ /// 2^26 / (4 n_comp) < 512).
+ const pruned_rows: usize = 512;
+ 
+-/// model.py's RING_EXTRA: window ring slots beyond the window (a verify window never clobbers a key it reads).
+-pub const ring_extra = 16;
++/// RING_EXTRA: 48 extra ring slots beyond the window so wide copy windows up to 48 rows stay in ring mode.
++pub const ring_extra = 48;
++/// Prompt chunks up to 16 rows run in ring mode (matching the captured kernels' cases).
++pub const ring_mode_rows = 16;
+ /// model.py's RAW: per-position compressor inputs kept (a ratio-2 group's earlier row for the next chunk).
+ pub const raw_rows = 64;
+ 
+@@ -447,7 +449,7 @@ pub const Chunk = struct {
+         ch.ws = .{ .xh = try a.take(cap * max_xk * 2), .w = try a.take(max_kn * 2), .h = try a.take(128 * 128 * 2) };
+         ch.blas_ws = try a.take(cublas.Blas.workspace_bytes);
+         // a plain (mixed pack) linear's fp32 output: its bf16 result, then ops.toF32
+-        ch.plain_tmp = try a.take(@max(cap * max_plain_n * 2, 1));
++        ch.plain_tmp = try a.take(@max(@max(cap, e.round_rows) * max_plain_n * 2, 1));
+         // grouped linears: every layer's counters (int32 [8 N / 128], zeros, left zero by each launch), the largest
+         // group's rotated rows and partials at 128 rows
+         var max_gk: usize = 0;
+@@ -594,13 +596,28 @@ pub fn counterOf(ch: *const Chunk, l: weights.Linear) !u64 {
+     return error.NoCounters;
+ }
+ 
+-/// The rows a mixed pack's plain (cuBLAS) linear runs over: `m`, padded to the engine's plain-rows setting and never
+-/// beyond a round's rows (the buffers are sized for those). cuBLAS picks its kernel and split-K from the GEMM's shape
+-/// and its rounding follows the pick, so a fixed shape keeps a token's bits the same whether it is decoded alone,
+-/// beside other streams, or under the draft block (TF_DS_PLAIN_ROWS=0 turns the padding off).
+-fn plainRows(e: *const Engine, m: usize) usize {
+-    if (e.plain_rows <= m) return m;
+-    return @min(e.plain_rows, e.round_rows);
++/// One piece's row count for a mixed pack's plain (cuBLAS) linear (`m` rows inside a `cap_rows`-row buffer).
++pub fn plainPiece(plain_rows: usize, round_rows: usize, cap_rows: usize, m: usize, off: usize) usize {
++    if (plain_rows == 0 or m > round_rows) return m - off;
++    const step = @min(plain_rows, round_rows);
++    return @min(step, @max(m, cap_rows) - off);
++}
++
++fn plainLinear(e: *const Engine, ch: *const Chunk, m: usize, cap_rows: usize, l: weights.Linear, x: u64, out: u64, out_bf16: bool) !void {
++    const k: usize = l.k;
++    const n: usize = l.n;
++    var off: usize = 0;
++    while (off < m) {
++        const mp = plainPiece(e.plain_rows, e.round_rows, cap_rows, m, off);
++        const xi = x + off * k * 2;
++        if (out_bf16) {
++            try e.blas.linearBf16(xi, l.plain, out + off * n * 2, mp, k, n);
++        } else {
++            try e.blas.linearBf16(xi, l.plain, ch.plain_tmp, mp, k, n);
++            try e.ops.toF32(e.s, ch.plain_tmp, out + off * n * 4, mp * n);
++        }
++        off += mp;
++    }
+ }
+ 
+ /// Exl3Group(ls) on m (1..128) rows (linear.py): one rot_many launch rotating every layer's input rows xs[i] (bf16,
+@@ -630,16 +647,10 @@ pub fn grouped(e: *const Engine, ch: *const Chunk, m: usize, ls: []const weights
+         try exl3_linear.rotMany(e.lin, e.s, calls[0..n_calls], m, true);
+         try exl3_linear.glinear(e.lin, e.s, calls[0..n_calls], m, ch.gz, true, true);
+     }
+-    const mp = plainRows(e, m);
+     for (plain[0..n_plain]) |i| {
+         const l = ls[i];
+         if (ldxs[i] != @as(usize, l.k) or ldos[i] != @as(usize, l.n)) return error.UnsupportedPlainLinear;
+-        if (types[i] == .bf16) {
+-            try e.blas.linearBf16(xs[i], l.plain, outs[i], mp, @as(usize, l.k), @as(usize, l.n));
+-        } else {
+-            try e.blas.linearBf16(xs[i], l.plain, ch.plain_tmp, mp, @as(usize, l.k), @as(usize, l.n));
+-            try e.ops.toF32(e.s, ch.plain_tmp, outs[i], mp * @as(usize, l.n));
+-        }
++        try plainLinear(e, ch, m, e.round_rows, l, xs[i], outs[i], types[i] == .bf16);
+     }
+ }
+ 
+@@ -664,15 +675,9 @@ pub fn groupedRotated(e: *const Engine, ch: *const Chunk, m: usize, calls: []exl
+     }
+     for (exl3[0..n_exl3]) |*c| c.counters = try counterOf(ch, c.layer);
+     if (n_exl3 > 0) try exl3_linear.glinear(e.lin, e.s, exl3[0..n_exl3], m, ch.gz, true, true);
+-    const mp = plainRows(e, m);
+     for (plain[0..n_plain]) |c| {
+         if (c.x == 0 or c.xh != 0 or c.ldx != @as(i64, c.layer.k) or c.ldy != @as(i64, c.layer.n)) return error.UnsupportedPlainLinear;
+-        if (c.y_dtype == .bf16) {
+-            try e.blas.linearBf16(c.x, c.layer.plain, c.y, mp, @as(usize, c.layer.k), @as(usize, c.layer.n));
+-        } else {
+-            try e.blas.linearBf16(c.x, c.layer.plain, ch.plain_tmp, mp, @as(usize, c.layer.k), @as(usize, c.layer.n));
+-            try e.ops.toF32(e.s, ch.plain_tmp, c.y, mp * @as(usize, c.layer.n));
+-        }
++        try plainLinear(e, ch, m, e.round_rows, c.layer, c.x, c.y, c.y_dtype == .bf16);
+     }
+ }
+ 
+@@ -878,20 +883,11 @@ pub fn attnMixes(e: *const Engine, ch: *Chunk, li: usize) !void {
+     }
+ }
+ 
+-/// mm(layer, x, out_dtype) of m rows: the prompt GEMM beyond Engine.gemm_rows (128) rows, the layer's own group (GROUPED) up to it.
+-fn mmRows(e: *const Engine, ch: *const Chunk, m: usize, l: weights.Linear, x: u64, ldx: usize, out: u64, out_type: tri_markov.OutType, os: usize) !void {
+-    // A mixed pack's float linear: torch's nn.Linear on bf16 rows (cublas.Blas.linearBf16), then the exact
+-    // bf16 -> fp32 widen when the caller wants fp32 (torch's mm's out_dtype).
++/// mm(layer, x, out_dtype) of m rows: the prompt GEMM beyond 128 rows, the layer's own group (GROUPED) up to 128.
++fn mmRows(e: *const Engine, ch: *const Chunk, m: usize, cap_rows: usize, l: weights.Linear, x: u64, ldx: usize, out: u64, out_type: tri_markov.OutType, os: usize) !void {
+     if (l.plain != 0) {
+         if (ldx != @as(usize, l.k) or os != @as(usize, l.n)) return error.UnsupportedPlainLinear;
+-        const mp = plainRows(e, m);
+-        if (out_type == .bf16) {
+-            try e.blas.linearBf16(x, l.plain, out, mp, @as(usize, l.k), @as(usize, l.n));
+-        } else {
+-            try e.blas.linearBf16(x, l.plain, ch.plain_tmp, mp, @as(usize, l.k), @as(usize, l.n));
+-            try e.ops.toF32(e.s, ch.plain_tmp, out, mp * @as(usize, l.n));
+-        }
+-        return;
++        return plainLinear(e, ch, m, cap_rows, l, x, out, out_type == .bf16);
+     }
+     if (prompt_rows.denseOnGemm(m, e.gemm_rows)) return exl3_prefill.matmul(e.pf, e.t, ch.ws, l, x, .bf16, ldx, out, out_type, os, m);
+     const dt: exl3_linear.DType = switch (out_type) {
+@@ -903,7 +899,7 @@ fn mmRows(e: *const Engine, ch: *const Chunk, m: usize, l: weights.Linear, x: u6
+ 
+ /// mm of the chunk's rows.
+ pub fn mm(e: *const Engine, ch: *const Chunk, l: weights.Linear, x: u64, ldx: usize, out: u64, out_type: tri_markov.OutType, os: usize) !void {
+-    try mmRows(e, ch, ch.n, l, x, ldx, out, out_type, os);
++    try mmRows(e, ch, ch.n, ch.cap, l, x, ldx, out, out_type, os);
+ }
+ 
+ /// TF_DS_REPLAY_FLOOR=1 (model.zig sets it on every rank): a small chunk whose window reaches below the floor reads it
+@@ -929,11 +925,9 @@ pub fn attention(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared, l
+     // _cs: the layer's RoPE kind (compressed layers rotate by the compressed table) for every rotation it makes
+     const rope = if (lay.ratio != 0) e.compressed else e.plain;
+     const ring_rows = c.window + ring_extra;
+-    // ring mode (a chunk of RING_EXTRA rows or fewer): the rows' keys into the ring first, the attention reads the ring.
+-    // With replay_floor, not when the window reaches below `floor` (the replay's cut: below it the ring holds the slot's
+-    // previous request's keys): such a chunk reads by the gather path from the floor, as one large chunk's rows would
++    // Ring mode runs up to ring_mode_rows unless replay_floor reaches below floor (where the gather path runs).
+     const below = floor > start -| (c.window - 1);
+-    const ring_mode = n <= ring_extra and !(replay_floor and below);
++    const ring_mode = n <= ring_mode_rows and !(replay_floor and below);
+     const one_split = !ring_mode and n <= tri.decode_rows;
+     // attn_in: wq_a and wkv of x, one prompt GEMM each, or one group up to Engine.gemm_rows rows
+     if (prompt_rows.denseOnGemm(n, e.gemm_rows)) {
+@@ -1202,7 +1196,7 @@ fn kvSourceUpdate(e: *const Engine, ch: *Chunk, cs: *const Caches, sh: *Shared,
+     const rot = e.compressed;
+     if (lay.idx_wk) |iwk| {
+         const id = c.index_head_dim;
+-        try mmRows(e, ch, full, iwk, ch.lat, hd, ch.lat2, .bf16, id);
++        try mmRows(e, ch, full, ch.cap, iwk, ch.lat, hd, ch.lat2, .bf16, id);
+         try e.exact.rmsNorm(e.s, ch.lat2, id, lay.idx_k_norm, ch.ik, id, full, id, c.eps);
+         try e.exact.rope(e.s, ch.ik, id, id - rd, rot.cos, rot.sin, ch.gpos, full, rd / 2, false);
+         // switch "comp": the packed cache's rows in one launch (fp4_store: store_rows' bytes)
+@@ -1745,7 +1739,7 @@ pub fn head(e: *const Engine, ch: *Chunk) !void {
+     const last_pre = ch.pre + (n - 1) * c.hc * 4;
+     try tri_basic.collapseNorm(e.t, last_h, last_pre, e.w.norm, ch.head_x, c.eps, 1, c.hidden);
+     const hl = e.w.head;
+-    try mmRows(e, ch, 1, hl, ch.head_x, c.hidden, ch.head_l, .fp32, hl.n);
++    try mmRows(e, ch, 1, 1, hl, ch.head_x, c.hidden, ch.head_l, .fp32, hl.n);
+     if (e.two) |t| return t.quarters(e, ch.head_l, ch.head_g, 1, t.hw, 4); // 2D: the vocabulary quarters, TP2's layout
+     try e.comm.allGather(ch.head_l, ch.head_g, hl.n, .f32, e.s);
+ }
+@@ -1767,6 +1761,20 @@ test "hd ** -0.5 as the served build passes it" {
+     try std.testing.expectEqual(@as(u32, 0x3d3504f3), @as(u32, @bitCast(scale(512))));
+ }
+ 
++test "plainPiece keeps 16-row cuBLAS geometry across wide 32-row decode windows" {
++    for ([_]usize{ 1, 2, 6, 15, 16 }) |m| {
++        try std.testing.expectEqual(@as(usize, 16), plainPiece(16, 32, 32, m, 0));
++    }
++    for ([_]usize{ 17, 24, 31, 32 }) |m| {
++        try std.testing.expectEqual(@as(usize, 16), plainPiece(16, 32, 32, m, 0));
++        try std.testing.expectEqual(@as(usize, 16), plainPiece(16, 32, 32, m, 16));
++    }
++    try std.testing.expectEqual(@as(usize, 2048), plainPiece(16, 32, 2048, 2048, 0));
++    try std.testing.expectEqual(@as(usize, 24), plainPiece(0, 32, 32, 24, 0));
++    try std.testing.expectEqual(@as(usize, 8), plainPiece(16, 24, 24, 20, 16));
++    try std.testing.expectEqual(@as(usize, 1), plainPiece(16, 32, 1, 1, 0));
++}
++
+ /// error.NotPortedYet with its site on stderr (a request that reaches a path the port lacks names it in the log).
+ fn notPorted(src: std.builtin.SourceLocation) error{NotPortedYet} {
+     std.debug.print("{{\"not_ported\": \"{s}:{d}\"}}\n", .{ src.file, src.line });
+-- 
+2.43.0
+

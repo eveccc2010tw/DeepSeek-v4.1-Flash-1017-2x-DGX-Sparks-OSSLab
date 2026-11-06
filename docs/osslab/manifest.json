@@ -1,0 +1,28 @@
+{
+  "upstream_recipe": "https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks",
+  "upstream_recipe_ref": "31457d05f8917301bbf609c3d12c7f364af8a4a6",
+  "engine_ref": "fbbc97132cd004237d9887b8d3185896efaedc5c",
+  "inputs_ref": "59402086381a42c74d53053443224eec2790b4c5",
+  "kit_ref": "abe07c7d509a0199cc7fec15263be2aa52ac652f",
+  "tuned_reviewed_ref": "171052a7d40745ba43f1d9fcb01cb3c2643d93923",
+  "engine_only_helper_patch_identity": "07d9bcbe5743",
+  "engine_patch_count": 52,
+  "inputs_patch_count": 2,
+  "custom_patches": {
+    "0100-dsv41-wide-copy-windows.patch": "8b34094c615d56fe618eb7d58ef6f2d73bcafca356d3338f94edb949d968231c",
+    "0101-prompt-progress-states.patch": "22a5da998016aafd94e7a2d378ccef804e27e1603b88191ee53f082b17b7557f",
+    "0102-responses-keepalive-ping.patch": "656ab117fb112d97c9f036c8c8c4adde8f908461f25e85a39c38c6b6270b1e96",
+    "0103-responses-buffer-growth.patch": "74df822c6f04f33da16073f7a0c4dd383bf2967f0716d48c6da43024a170699f"
+  },
+  "source_files": {
+    "zig/patches/0101-prompt-progress-states.patch": "22a5da998016aafd94e7a2d378ccef804e27e1603b88191ee53f082b17b7557f",
+    "zig/patches/0102-responses-keepalive-ping.patch": "656ab117fb112d97c9f036c8c8c4adde8f908461f25e85a39c38c6b6270b1e96",
+    "zig/patches/0103-responses-buffer-growth.patch": "74df822c6f04f33da16073f7a0c4dd383bf2967f0716d48c6da43024a170699f",
+    "zig/patches/0100-dsv41-wide-copy-windows.patch": "8b34094c615d56fe618eb7d58ef6f2d73bcafca356d3338f94edb949d968231c",
+    "tools/rebuild-mia-zig-engine.py": "b2795c3ddb3f341013cf4516cbb170a150c32fed4ae11e8848d3b39ec8c53105",
+    "tools/prepare-mia-zig-container.py": "3c785666bb08c8c10a507ede51fac1165cee00322fb369fd6303f3eefdb09f80",
+    "tools/accept-mia-current.py": "86c8d313353bf222c269bf70d144d2d95e4845dc540d244ac8a3994d60856684",
+    "tools/prepare-prefix-container.py": "209a1abc51c8c3ca1d1e69954883273e112b891423279a81186d9c3b9a225121",
+    "tools/benchmark-matched.py": "323ac84f7b8a057b6c6253d4fc06b9c7abcae8c6f9594a0a27926e19d8fc7e9f"
+  }
+}

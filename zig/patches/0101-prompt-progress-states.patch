@@ -1,0 +1,1221 @@
+From d0f26ca9 Mon Sep 17 00:00:00 2001
+From: OSSLab <admin@asources.com>
+Subject: [PATCH] Port RAM-only prompt progress across piecewise prefill
+
+Port OSSLab 0036 onto Mia recipe 31457d0 / TensorFold fbbc971.
+Retain cacheKey, restored fill state, usable/tail checks, and test chunked retries.
+
+diff --git a/zig/src/core/lane_host.zig b/zig/src/core/lane_host.zig
+index 5245739c..97ef298b 100644
+--- a/zig/src/core/lane_host.zig
++++ b/zig/src/core/lane_host.zig
+@@ -225,6 +225,7 @@ pub const LaneHost = struct {
+         prefilled: ?i96 = null,
+         entry: ?*pc.Entry = null, // the kept state the backend restores, until its prompt pass reports
+         marks: []const u32 = &.{}, // where the pass keeps states (gpa-owned)
++        progress: []const u32 = &.{}, // those of the marks that are rolling progress states (gpa-owned)
+         kept0: u64 = 0, // the store's kept count when the job looked it up
+         tried_disk: bool = false, // it waited for a restore once: a later lookup takes what memory has
+         deferred_since: ?i96 = null, // its restore was first refused for capacity then (asked again until defer_ns)
+@@ -244,8 +245,8 @@ pub const LaneHost = struct {
+             const r = job.request;
+             if (!cacheable(r)) return;
+             const pics = r.images.len > 0; // (the tier records each picture's identity and the prompt's model ids)
+-            // an image span keyed by its digest (Request.cacheKey)
+-            _ = store.keepWith(r.cacheKey(), at, s, r.chunks, .{ .group = job.join.group, .images = pics, .media = if (pics) tierMedia(r) else &.{}, .raw = if (pics) r.prompt else &.{}, .parent = job.parent, .fork = job.fork, .lineage = job.lineage });
++            const is_progress = std.mem.indexOfScalar(u32, job.progress, at) != null;
++            _ = store.keepWith(r.cacheKey(), at, s, r.chunks, .{ .group = job.join.group, .images = pics, .media = if (pics) tierMedia(r) else &.{}, .raw = if (pics) r.prompt else &.{}, .parent = job.parent, .fork = job.fork, .lineage = job.lineage, .progress = is_progress });
+         }
+ 
+         /// Report a restored prefix or its failed copy; an untouched prefix remains kept.
+@@ -482,6 +483,7 @@ pub const LaneHost = struct {
+     fn finish(h: *LaneHost, job: *Job, reason: Reason, message: []const u8) void {
+         job.reported();
+         h.gpa.free(job.marks);
++        h.gpa.free(job.progress);
+         h.gpa.free(job.lineage);
+         const s = &job.stream;
+         const stats: Stats = if (job.started) .{ .rounds = s.rounds, .drafted = s.drafted, .accepted = s.accepted, .min_rows = s.min_rows, .loop_period = s.loop_period, .prefill_seconds = if (job.prefilled) |done| @as(f64, @floatFromInt(@as(i64, @intCast(@max(0, done - job.began))))) / 1e9 else null } else .{};
+@@ -633,11 +635,12 @@ pub const LaneHost = struct {
+             job.entry = l.entry;
+             job.kept0 = store.counts.kept;
+             job.marks = l.marks;
++            job.progress = l.progress;
+             reuse = .{ .saved = if (l.entry) |e| e.saved else null, .at = if (l.entry) |e| e.at else 0, .marks = l.marks, .hook = .{ .ptr = job, .at = Job.kept } };
+             if (store.groups) job.join = store.join(r.cacheKey(), l.entry, r.images.len == 0 and r.drafts);
+             if (l.entry) |e| {
+-                job.parent = e.point;
+-                job.fork = e.at;
++                job.parent = e.point orelse e.origin_point;
++                job.fork = if (e.point != null) e.at else e.origin_fork;
+             }
+             // its rows' computation: the resumed state's forked at its position (written or not), else its own
+             job.lineage = store.passLineage(l.entry) catch &.{};
+@@ -890,6 +893,8 @@ pub const LaneHost = struct {
+         job.entry = null; // nothing was restored: the store keeps the entry for the next lookup
+         h.gpa.free(job.marks);
+         job.marks = &.{};
++        h.gpa.free(job.progress);
++        job.progress = &.{};
+         job.stream.deinit(h.gpa);
+         job.proposer.deinit();
+         job.started = false;
+diff --git a/zig/src/core/lane_host_reuse_test.zig b/zig/src/core/lane_host_reuse_test.zig
+index afb30847..462d6e56 100644
+--- a/zig/src/core/lane_host_reuse_test.zig
++++ b/zig/src/core/lane_host_reuse_test.zig
+@@ -440,3 +440,114 @@ test "a turn resuming its kept state cuts in when the tokens it computes fit cut
+     for (seen[first + 1 .. second]) |s| try std.testing.expectEqual(t2.items.len, s[0]);
+     for (seen[second..]) |s| try std.testing.expect(s[0] != t2.items.len);
+ }
++
++test "a pass its client leaves resumes from its last progress state on the retry, replying as an uninterrupted pass" {
++    const gpa = std.testing.allocator;
++    for ([_]u32{ 0, 8 }) |gap| for ([_]usize{ 0, 1, 2 }) |fill_chunks| {
++        var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .gpu_tokens = true, .hidden_rows = true }, 8, 7);
++        defer cfg.deinit(gpa);
++        // dsv41's pass: a grid of 8-token chunks, each mark kept as its chunk reaches it, a cancel seen per chunk
++        var target: lanes.fake.Fake = .{ .gpa = gpa, .incremental = true, .prefill_chunks = 8 };
++        defer target.deinit();
++        var clock: lanes.fake.FixedClock = .{};
++        var core = lanes.Engine.init(gpa, &cfg, target.backend(), clock.clock());
++        defer core.deinit();
++        core.fill_chunks = @intCast(fill_chunks);
++        core.cut_in = if (fill_chunks > 0) 8 else 0;
++        const Snaps = struct {
++            fn bytes(_: *anyopaque, at: u32) u64 {
++                return 64 + 4 * @as(u64, at);
++            }
++            fn save(ptr: *anyopaque, owner: ?*anyopaque, at: u32) anyerror!pc.Saved {
++                const f: *lanes.fake.Fake = @ptrCast(@alignCast(ptr));
++                return f.save(@ptrCast(@alignCast(owner.?)), at);
++            }
++            fn restore(_: *anyopaque, _: ?*anyopaque, _: pc.Saved) anyerror!void {
++                return error.BackendRestores;
++            }
++            fn drop(ptr: *anyopaque, saved: pc.Saved) void {
++                const f: *lanes.fake.Fake = @ptrCast(@alignCast(ptr));
++                f.drop(saved);
++            }
++        };
++        var store = pc.Store.init(gpa, .{ .ptr = &target, .vtable = &.{ .bytes = Snaps.bytes, .save = Snaps.save, .restore = Snaps.restore, .drop = Snaps.drop } }, .{ .min_gap = 4, .min_prompt = 0, .progress_gap = gap }, 1 << 20);
++        defer store.deinit();
++        var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 2 });
++        host.cache = &store;
++        const Cancel = struct {
++            engine: ?api.Engine = null,
++            id: Id = 0,
++            at: usize = 5,
++            armed: std.atomic.Value(bool) = .init(true),
++            fn call(ctx: *anyopaque, _: *lanes.Stream, chunk: usize) void {
++                const c: *@This() = @ptrCast(@alignCast(ctx));
++                if (chunk == c.at and c.armed.load(.acquire)) c.engine.?.cancel(c.id); // the client leaves 40 tokens in
++            }
++        };
++        var cancel: Cancel = .{};
++        target.prefill_hook = Cancel.call;
++        target.prefill_hook_ctx = &cancel;
++        try host.start();
++        defer host.stop();
++        const e = host.engine();
++        cancel.engine = e;
++        cancel.id = 1;
++        const Box = struct {
++            mutex: std.Io.Mutex = .init,
++            tokens: std.ArrayList(u32) = .empty,
++            cached: ?u32 = null,
++            done: ?Reason = null,
++            fn event(ctx: *anyopaque, _: Id, ev: *const Event) void {
++                const b: *@This() = @ptrCast(@alignCast(ctx));
++                b.mutex.lockUncancelable(std.testing.io);
++                defer b.mutex.unlock(std.testing.io);
++                switch (ev.*) {
++                    .prefilled => |c| b.cached = c,
++                    .tokens => |t| b.tokens.appendSlice(gpa, t) catch {},
++                    .finished => |f| b.done = f.reason,
++                }
++            }
++            fn wait(b: *@This()) Reason {
++                while (true) {
++                    b.mutex.lockUncancelable(std.testing.io);
++                    const d = b.done;
++                    b.mutex.unlock(std.testing.io);
++                    if (d) |r| return r;
++                    std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
++                }
++            }
++        };
++        var prompt: [64]u32 = undefined;
++        for (&prompt, 0..) |*t, i| t.* = @intCast((i * 7 + 3) % 97);
++        var b1: Box = .{};
++        defer b1.tokens.deinit(gpa);
++        const r1: Request = .{ .prompt = &prompt, .max_tokens = 6, .history_len = 62 };
++        try e.submit(1, &r1, .{ .ctx = &b1, .event = Box.event });
++        try std.testing.expectEqual(Reason.cancelled, b1.wait());
++        try std.testing.expectEqual(@as(usize, 0), b1.tokens.items.len);
++        // with progress states only the latest stays, at 40; without them nothing was kept
++        try std.testing.expectEqual(@as(usize, if (gap == 0) 0 else 1), store.entries.items.len);
++        if (gap > 0) try std.testing.expect(store.entries.items[0].progress and store.entries.items[0].at == 40);
++        cancel.armed.store(false, .release);
++        var b2: Box = .{};
++        defer b2.tokens.deinit(gpa);
++        const r2: Request = .{ .prompt = &prompt, .max_tokens = 6, .history_len = 62 };
++        try e.submit(2, &r2, .{ .ctx = &b2, .event = Box.event });
++        try std.testing.expectEqual(Reason.length, b2.wait());
++        try std.testing.expectEqual(@as(?u32, if (gap == 0) 0 else 40), b2.cached);
++        var history: std.ArrayList(u32) = .empty; // the fake's tokens read the whole history: any slip changes them
++        defer history.deinit(gpa);
++        try history.appendSlice(gpa, &prompt);
++        try std.testing.expectEqual(@as(usize, 6), b2.tokens.items.len);
++        for (b2.tokens.items) |t| {
++            try std.testing.expectEqual(lanes.fake.next(history.items, null, history.items.len), t);
++            try history.append(gpa, t);
++        }
++        // the retry's own progress states went once its history's state was kept
++        try std.testing.expectEqual(@as(usize, 1), store.entries.items.len);
++        try std.testing.expectEqual(@as(u32, 62), store.entries.items[0].at);
++        try std.testing.expect(!store.entries.items[0].progress);
++        try std.testing.expectEqual(@as(u64, if (gap == 0) 0 else 1), store.counts.hits);
++        try std.testing.expectEqual(@as(u64, 0), store.counts.evicted);
++    };
++}
+diff --git a/zig/src/core/lanes/fake.zig b/zig/src/core/lanes/fake.zig
+index fd6cc02a..c8efca9d 100644
+--- a/zig/src/core/lanes/fake.zig
++++ b/zig/src/core/lanes/fake.zig
+@@ -44,6 +44,8 @@ pub const Fake = struct {
+     refuse_sampled: bool = false, // prefill refuses a sampled stream with error.SamplingRefused
+     refuse_full: usize = 0, // prefill refuses this many times with error.ContextFull while another lane is live
+     refuse_busy: usize = 0, // a cut-in (Stream.cut_in) is refused this many times with error.FillBusy (its state gone)
++    // Incremental prefill runs equal chunks from 0, keeping marks and checking cancel at each chunk boundary.
++    incremental: bool = false,
+ 
+     pub fn deinit(x: *Fake) void {
+         var it = x.lanes.valueIterator();
+@@ -130,6 +132,7 @@ pub const Fake = struct {
+     }
+ 
+     fn pieces(x: *Fake, s: *Stream, chunks: usize) !bool {
++        if (x.incremental) return x.prefillIncremental(s, chunks);
+         const l = x.lanes.getPtr(s).?;
+         const total = if (x.prefill_chunks == 0) 1 else x.prefill_chunks;
+         var ran: usize = 0;
+@@ -156,6 +159,40 @@ pub const Fake = struct {
+         return true;
+     }
+ 
++    /// Copy kept prefix tokens, then run equal chunks from 0, keeping marks and checking cancel after chunk 0.
++    fn prefillIncremental(x: *Fake, s: *Stream, budget: usize) anyerror!bool {
++        const l = x.lanes.getPtr(s).?;
++        if (l.pieces == 0) {
++            s.cached = 0;
++            const h = &l.history;
++            if (s.reuse.saved) |saved| {
++                const kept: *std.ArrayList(u32) = @ptrCast(@alignCast(saved));
++                try h.appendSlice(x.gpa, kept.items);
++                s.cached = s.reuse.at;
++            }
++        }
++        const prompt = s.prompt();
++        const chunks = if (x.prefill_chunks == 0) 1 else x.prefill_chunks;
++        const step = @max(1, (prompt.len + chunks - 1) / chunks);
++        var ran: usize = 0;
++        while (ran < budget) : (ran += 1) {
++            const done = x.lanes.getPtr(s).?.history.items.len;
++            if (done >= prompt.len) return true;
++            const chunk = done / step;
++            x.prefill_count += 1;
++            if (x.prefill_hook) |hook| hook(x.prefill_hook_ctx.?, s, chunk);
++            if (done > 0 and s.isCancelled()) return error.Cancelled; // (dsv41: `start > 0 and s.isCancelled()`)
++            x.lanes.getPtr(s).?.pieces += 1;
++            const end = @min(prompt.len, (chunk + 1) * step);
++            for (prompt[done..end], done + 1..) |t, at| {
++                try x.lanes.getPtr(s).?.history.append(x.gpa, t);
++                if (std.mem.indexOfScalar(u32, s.reuse.marks, @intCast(at)) != null) if (s.reuse.hook) |k| k.at(k.ptr, s, @intCast(at));
++            }
++            if (end < prompt.len) if (s.between) |b| if (b.wanted(b.ptr)) try b.run(b.ptr);
++        }
++        return x.lanes.getPtr(s).?.history.items.len >= prompt.len;
++    }
++
+     /// A copy of the stream's cache at `at` tokens (the prompt pass stands there), for core/prompt_cache.zig.
+     pub fn save(x: *Fake, s: *Stream, at: u32) !*anyopaque {
+         const l = x.lane(s);
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index 821d8fcd..7dce57b0 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -403,6 +403,8 @@ pub const Rules = struct {
+     grid: u32 = 0,
+     /// The rows a resumed pass replays at its end (dsv41: the window): a state is usable only this far from the end.
+     window: u32 = 0,
++    /// Rolling RAM-only progress state interval in tokens (0: off); retired by newer states of the same prompt.
++    progress_gap: u32 = 0,
+ 
+     /// The native rule (Lanes.usable): 0 < at < len, on the grid, at most len - window, its lookahead inside the prompt.
+     pub fn eligible(r: Rules, at: u32, len: usize) bool {
+@@ -435,8 +437,11 @@ pub const Entry = struct {
+     used: u64, // the store's clock at its last keep or resume
+     last: []u32, // the last prompt that kept or resumed it
+     shared: bool = false, // kept at a shared system block's cut: other conversations resume it, so its own never supersedes it
++    progress: bool = false, // a rolling progress state (Rules.progress_gap): RAM-only, retired by a later state of its prompt
+     group: u64 = 0, // the conversation that kept it (0111; 0: grouping off)
+     point: ?u64 = null, // its durable point in the tier (written at keep, or restored from)
++    origin_point: ?u64 = null, // for a progress state: the ancestor durable point its pass resumed from
++    origin_fork: u32 = 0,
+     images: bool = false, // its key holds pictures' keys
+     restored: bool = false, // read back from the tier: not a turn's own state (it counts against no conversation)
+     lineage: []Fork = &.{}, // the computation its rows belong to (store-owned; empty without a tier)
+@@ -447,8 +452,8 @@ pub const Counts = struct { hits: u64 = 0, misses: u64 = 0, kept: u64 = 0, evict
+ /// Where a prompt pass starts and where it stops to keep its state (marks sorted, in `a`).
+ pub const Plan = struct { from: u32 = 0, marks: []const u32 = &.{} };
+ 
+-/// The entry a backend restores itself (null: the pass starts at 0) and the pass's marks.
+-pub const Lookup = struct { entry: ?*Entry = null, marks: []const u32 = &.{} };
++/// Looked-up entry and sorted marks; `progress` lists the rolling progress subset in the same allocator.
++pub const Lookup = struct { entry: ?*Entry = null, marks: []const u32 = &.{}, progress: []const u32 = &.{} };
+ 
+ /// A side-effect-free look at what a prompt would resume: the best usable memory state, and a longer durable point.
+ pub const Probe = struct { memory: ?*Entry = null, durable: ?Point = null };
+@@ -462,6 +467,7 @@ pub const KeepInfo = struct {
+     parent: ?u64 = null,
+     fork: u32 = 0,
+     lineage: []const Fork = &.{}, // the pass's (Store.passLineage), copied into the entry
++    progress: bool = false, // a rolling progress state (Lookup.progress; RAM-only, never enqueued to the durable tier)
+ };
+ 
+ pub const Store = struct {
+@@ -833,6 +839,7 @@ pub const Store = struct {
+     /// Before a prompt pass: restore the longest state `prompt` resumes (from 0: none or a failed copy) and plan its marks.
+     pub fn begin(s: *Store, a: Allocator, prompt: []const u32, history_len: u32, shared: []const u32, starts: []const u32, owner: ?*anyopaque) !Plan {
+         const l = try s.lookup(a, prompt, history_len, shared, starts);
++        a.free(l.progress); // (a backend that keeps through `keep` takes every mark alike: its progress states are not rolled)
+         const e = l.entry orelse return .{ .marks = l.marks };
+         const ok = if (s.family.vtable.restore(s.family.ptr, owner, e.saved)) |_| true else |err| blk: {
+             note("restoring {d} tokens failed ({s}); prefilling from the start", .{ e.at, @errorName(err) });
+@@ -849,6 +856,7 @@ pub const Store = struct {
+         const e = s.recall(prompt, starts, s.find(prompt, starts));
+         if (e == null) s.counts.misses += 1;
+         const marks_ = try s.fitting(a, try s.marks(a, prompt, if (e) |x| x.at else 0, history_len, shared, starts, if (e) |x| x.last else &.{}));
++        errdefer a.free(marks_);
+         for (shared) |w| { // the shared cuts this pass keeps: their states serve other conversations too
+             // the mark as `marks` computed it (a chunk start, or the cut itself), and the state the family keeps for
+             // it (a chunk start, or the cut on the family's grid: dsv41 keeps an off-grid mark at its chunk end)
+@@ -857,8 +865,40 @@ pub const Store = struct {
+             const at = if (s.rules.planned) m else s.rules.floorGrid(w);
+             if (at > 0) s.noteShared(prompt[0 .. at + s.rules.lookahead]);
+         }
++        // Progress states are not reserved upfront; keepWith takes room only from earlier states of this same prompt.
+         s.reserve(prompt, e, marks_);
+-        return .{ .entry = e, .marks = marks_ };
++        const progress = try s.progressMarks(a, prompt, if (e) |x| x.at else 0, history_len, starts, marks_);
++        if (progress.len == 0) return .{ .entry = e, .marks = marks_ };
++        errdefer a.free(progress);
++        const all = try a.alloc(u32, marks_.len + progress.len);
++        @memcpy(all[0..marks_.len], marks_);
++        @memcpy(all[marks_.len..], progress);
++        std.mem.sort(u32, all, {}, std.sort.asc(u32));
++        a.free(marks_);
++        return .{ .entry = e, .marks = all, .progress = progress };
++    }
++
++    /// Rolling progress marks past `from` up to half a gap before history_len (or cap), min_gap apart.
++    pub fn progressMarks(s: *const Store, a: Allocator, prompt: []const u32, from: u32, history_len: u32, starts: []const u32, others: []const u32) ![]const u32 {
++        const gap: u64 = s.rules.progress_gap;
++        if (gap == 0 or prompt.len < s.rules.min_prompt) return &.{};
++        const cap: u64 = prompt.len -| s.rules.window;
++        const end: u64 = if (history_len > 0) @min(history_len, cap) else cap;
++        var out: std.ArrayList(u32) = .empty;
++        errdefer out.deinit(a);
++        var w: u64 = (@as(u64, from) / gap + 1) * gap;
++        while (w + gap / 2 <= end) : (w += gap) {
++            const at: u32 = if (s.rules.planned) floorStart(starts, @intCast(w)) else s.rules.floorGrid(@intCast(w));
++            if (at <= from or at - from < s.rules.min_gap or @as(usize, at) + s.rules.lookahead > prompt.len or at >= prompt.len or !s.usable(at, starts)) continue;
++            if ((s.rules.grid > 0 or s.rules.window > 0) and !s.rules.eligible(at, prompt.len)) continue;
++            const near = for (others) |o| {
++                const og = s.rules.floorGrid(o);
++                if (@max(o, at) - @min(o, at) < s.rules.min_gap or (og > 0 and @max(og, at) - @min(og, at) < s.rules.min_gap)) break true;
++            } else false;
++            if (near or std.mem.indexOfScalar(u32, out.items, at) != null) continue;
++            try out.append(a, at);
++        }
++        return out.toOwnedSlice(a);
+     }
+ 
+     /// Room for every state the pass keeps, made before it: a peer that mirrors the keeps hears of these evictions with the request.
+@@ -954,28 +994,52 @@ pub const Store = struct {
+         return s.keepWith(prompt, at, owner, starts, .{});
+     }
+ 
+-    /// keep, recording the state's conversation, pictures and lineage; with a tier its write is enqueued here.
++    /// Keep state at `at`; when `progress`, takes room only from earlier same-prompt states (not refused).
++    pub fn keepAs(s: *Store, prompt: []const u32, at: u32, owner: ?*anyopaque, starts: []const u32, progress: bool) bool {
++        return s.keepWith(prompt, at, owner, starts, .{ .progress = progress });
++    }
++
++    /// Keep state with conversation, media and lineage; rolling progress states stay RAM-only until promoted in place.
+     pub fn keepWith(s: *Store, prompt: []const u32, at: u32, owner: ?*anyopaque, starts: []const u32, info: KeepInfo) bool {
+         const n = @as(usize, at) + s.rules.lookahead;
+         if (at == 0 or n > prompt.len) return false;
+         s.clock += 1;
+         const shared = std.mem.indexOfScalar(u64, s.shared_keys.items, sharedKey(prompt[0..n])) != null;
+-        for (s.entries.items) |e| if (e.at == at and std.mem.eql(u32, e.tokens, prompt[0..n])) {
+-            e.used = s.clock; // the same state again: no copy
+-            if (shared and !e.shared) if (e.point) |p| if (s.tier) |t| if (t.vtable.share) |f| { // now a shared prefix, on disk too
+-                f(t.ptr, p);
+-                s.stats.shared_promoted += 1;
+-            };
+-            e.shared = e.shared or shared;
+-            if (e.group == 0) e.group = info.group;
+-            return true;
++        const is_progress = info.progress and !shared;
++        for (s.entries.items, 0..) |e, idx| if (e.at == at and std.mem.eql(u32, e.tokens, prompt[0..n])) {
++            if (s.live(e, prompt.len)) {
++                e.used = s.clock; // the same usable state again: no copy
++                if (shared and !e.shared) if (e.point) |p| if (s.tier) |t| if (t.vtable.share) |f| { // now a shared prefix, on disk too
++                    f(t.ptr, p);
++                    s.stats.shared_promoted += 1;
++                };
++                e.shared = e.shared or shared;
++                if (e.group == 0) e.group = info.group;
++                const was_progress = e.progress;
++                if (!is_progress) e.progress = false; // a history or shared mark at the same place stays
++                if (!is_progress and was_progress and e.point == null) if (s.tier) |t| {
++                    e.point = t.vtable.keep(t.ptr, &.{ .saved = e.saved, .key = e.tokens, .at = at, .bytes = e.bytes, .group = e.group, .shared = e.shared, .images = e.images, .media = info.media, .raw = info.raw, .parent = e.origin_point, .fork = e.origin_fork, .lineage = e.lineage });
++                    if (e.point != null) s.stats.writes_enqueued += 1;
++                };
++                s.retireProgress(prompt[0..n], at, e);
++                return true;
++            }
++            // A stale twin cannot stand in for lost rows: retire it before saving the fresh copy.
++            s.remove(idx);
++            break;
+         };
+         const bytes = s.family.vtable.bytes(s.family.ptr, at);
+         if (bytes > s.budget) {
+-            s.counts.refused += 1;
+-            note("kept nothing at {d} tokens: {d} MiB passes the {d} MiB budget", .{ at, bytes >> 20, s.budget >> 20 });
++            if (!is_progress) {
++                s.counts.refused += 1;
++                note("kept nothing at {d} tokens: {d} MiB passes the {d} MiB budget", .{ at, bytes >> 20, s.budget >> 20 });
++            }
+             return false;
+         }
++        // Refuse early without retiring earlier progress if even all freeable same-prefix states cannot fit `bytes`.
++        if (is_progress and !(if (s.family.vtable.reuses) |f| f(s.family.ptr, at) else false) and (s.held -| s.progressFreeable(prompt, at)) + s.restoring_bytes + bytes > s.budget) return false;
++        // Superseded progress states of this prompt give room first so no other conversation's state is evicted.
++        s.retireProgress(prompt[0..n], at, null);
+         while (s.entries.items.len > 0) { // room: spare storage this save can take, else new storage inside the budget
+             if (s.family.vtable.reuses) |f| if (f(s.family.ptr, at)) break;
+             const free_ = s.spare();
+@@ -984,15 +1048,19 @@ pub const Store = struct {
+                 if (s.family.vtable.trim) |f| f(s.family.ptr, s.budget -| s.held -| s.restoring_bytes -| bytes); // spare that cannot take this state goes before any state
+                 if (s.spare() < free_) continue;
+             }
+-            s.remove(s.victimBut(null, prompt).?); // its storage may come back spare and take this state
++            // Progress states take room only from superseded states of this same prompt prefix.
++            const victim = if (is_progress) (s.progressVictim(prompt, at) orelse return false) else s.victimBut(null, prompt).?;
++            s.remove(victim);
+             s.counts.evicted += 1;
+         }
+         if (s.entries.items.len == 0) if (s.family.vtable.trim) |f| f(s.family.ptr, s.budget -| s.restoring_bytes -| bytes);
+         if (s.restoring_bytes > 0 and s.held + s.restoring_bytes + bytes > s.budget) { // restores in flight hold the rest
+             const reuses = if (s.family.vtable.reuses) |f| f(s.family.ptr, at) else false;
+             if (!reuses) {
+-                s.counts.refused += 1;
+-                note("kept nothing at {d} tokens: restores in flight hold {d} MiB of the {d} MiB budget", .{ at, s.restoring_bytes >> 20, s.budget >> 20 });
++                if (!is_progress) {
++                    s.counts.refused += 1;
++                    note("kept nothing at {d} tokens: restores in flight hold {d} MiB of the {d} MiB budget", .{ at, s.restoring_bytes >> 20, s.budget >> 20 });
++                }
+                 return false;
+             }
+         }
+@@ -1020,22 +1088,73 @@ pub const Store = struct {
+             return s.fail(at, error.OutOfMemory);
+         };
+         const charged = if (s.family.vtable.charged) |f| f(s.family.ptr, saved) else bytes;
+-        e.* = .{ .tokens = tokens, .at = at, .saved = saved, .bytes = charged, .born = @intCast(prompt.len), .used = s.clock, .last = last, .shared = shared, .group = info.group, .images = info.images, .lineage = lin };
++        e.* = .{
++            .tokens = tokens,
++            .at = at,
++            .saved = saved,
++            .bytes = charged,
++            .born = @intCast(prompt.len),
++            .used = s.clock,
++            .last = last,
++            .shared = shared,
++            .progress = is_progress,
++            .group = info.group,
++            .origin_point = if (is_progress) info.parent else null,
++            .origin_fork = if (is_progress and info.parent != null) info.fork else 0,
++            .images = info.images,
++            .lineage = lin,
++        };
+         s.entries.append(s.gpa, e) catch {
+             s.free(e);
+             return s.fail(at, error.OutOfMemory);
+         };
+         s.held += charged;
+         s.counts.kept += 1;
+-        if (s.tier) |t| { // write at keep: the tier stages the state's bytes between rounds
++        if (!is_progress) if (s.tier) |t| { // write at keep: the tier stages the state's bytes between rounds
+             e.point = t.vtable.keep(t.ptr, &.{ .saved = saved, .key = tokens, .at = at, .bytes = charged, .group = info.group, .shared = shared, .images = info.images, .media = info.media, .raw = info.raw, .parent = info.parent, .fork = info.fork, .lineage = lin });
+             if (e.point != null) s.stats.writes_enqueued += 1;
+-        }
++        };
+         if (shared) s.learn(e, starts);
+         if (s.family.vtable.trim) |f| f(s.family.ptr, s.budget -| s.held -| s.restoring_bytes); // spare storage only inside what the budget leaves
+         return true;
+     }
+ 
++    /// Retire shorter non-shared progress states whose tokens begin `tokens` (never `newest` itself).
++    fn retireProgress(s: *Store, tokens: []const u32, at: u32, newest: ?*const Entry) void {
++        var i: usize = 0;
++        while (i < s.entries.items.len) {
++            const e = s.entries.items[i];
++            if ((newest == null or e != newest.?) and e.progress and !e.shared and e.at < at and e.tokens.len <= tokens.len and std.mem.eql(u32, tokens[0..e.tokens.len], e.tokens)) {
++                s.remove(i);
++            } else i += 1;
++        }
++    }
++
++    /// Older non-shared state of `prompt` below `at` that a progress state at `at` may free (oldest first, null: none).
++    fn progressVictim(s: *const Store, prompt: []const u32, at: u32) ?usize {
++        var best: ?usize = null;
++        for (s.entries.items, 0..) |e, i| {
++            if (s.yields(e, prompt, at) and (best == null or e.used < s.entries.items[best.?].used)) best = i;
++        }
++        return best;
++    }
++
++    /// Total bytes held by states of `prompt` below `at` that a progress state at `at` may free.
++    fn progressFreeable(s: *const Store, prompt: []const u32, at: u32) u64 {
++        var sum: u64 = 0;
++        for (s.entries.items) |e| if (s.yields(e, prompt, at)) {
++            sum += e.bytes;
++        };
++        return sum;
++    }
++
++    /// Whether `e` gives its room to a progress state at `at` of `prompt` (same prefix from below `at`, never shared).
++    fn yields(_: *const Store, e: *const Entry, prompt: []const u32, at: u32) bool {
++        if (e.shared or e.at >= at or e.tokens.len > prompt.len) return false;
++        if (!std.mem.eql(u32, prompt[0..e.tokens.len], e.tokens)) return false;
++        return e.progress or (prompt.len > e.born and prompt.len > e.tokens.len);
++    }
++
+     /// A shared cut's state written to disk once (--learn): later sessions read it back, after a restart too.
+     fn learn(s: *Store, e: *const Entry, starts: []const u32) void {
+         const im = s.imprint orelse return;
+@@ -1155,12 +1274,11 @@ pub const Store = struct {
+         return commonPrefix(e.last, prompt) >= @min(e.last.len, @as(usize, root) + chat_match);
+     }
+ 
+-    /// The own kept state whose conversation `prompt` continues (continued_chat): most recently used first; a later
+-    /// entry wins a tie of use. Shared, restored, pictured and forgotten conversations' states are passed over.
++    /// Most recently used own non-progress, non-shared, non-restored, non-pictured state whose chat `prompt` continues.
+     pub fn continuedChat(s: *const Store, prompt: []const u32) ?*Entry {
+         var best: ?*Entry = null;
+         for (s.entries.items) |c| {
+-            if (c.shared or c.restored or c.images or c.group == 0) continue;
++            if (c.shared or c.restored or c.progress or c.images or c.group == 0) continue;
+             const root = s.roots.get(c.group) orelse continue;
+             const n = @as(usize, root) + chat_match;
+             if (c.last.len < n or prompt.len < n or c.last[n - 1] != prompt[n - 1] or !std.mem.eql(u32, c.last[0..n], prompt[0..n])) continue;
+@@ -1238,4 +1356,5 @@ fn floorStart(starts: []const u32, at: u32) u32 {
+ test {
+     _ = @import("prompt_cache_test.zig");
+     _ = @import("prompt_cache_tier_test.zig");
++    _ = @import("prompt_cache_progress_test.zig");
+ }
+diff --git a/zig/src/core/prompt_cache_progress_test.zig b/zig/src/core/prompt_cache_progress_test.zig
+new file mode 100644
+index 00000000..e3ab79da
+--- /dev/null
++++ b/zig/src/core/prompt_cache_progress_test.zig
+@@ -0,0 +1,240 @@
++//! Rolling prompt progress state tests: grid marks, cancel+retry resume, same-prefix yield bounds, and OOM cleanup.
++const std = @import("std");
++const pc = @import("prompt_cache.zig");
++const Snapshots = pc.Snapshots;
++const Saved = pc.Saved;
++const Store = pc.Store;
++const Allocator = std.mem.Allocator;
++
++const Fake = struct {
++    gpa: Allocator,
++    at: u32 = 0,
++    sum: u64 = 0,
++    live: usize = 0,
++
++    const State = struct { at: u32, sum: u64 };
++
++    fn snapshots(f: *Fake) Snapshots {
++        return .{ .ptr = f, .vtable = &.{ .bytes = bytesFn, .save = saveFn, .restore = restoreFn, .drop = dropFn } };
++    }
++    fn of(ptr: *anyopaque) *Fake {
++        return @ptrCast(@alignCast(ptr));
++    }
++    fn bytesFn(_: *anyopaque, at: u32) u64 {
++        return 100 + at;
++    }
++    fn saveFn(ptr: *anyopaque, _: ?*anyopaque, at: u32) anyerror!Saved {
++        const f = of(ptr);
++        if (at != f.at) return error.NotAtMark;
++        const st = try f.gpa.create(State);
++        st.* = .{ .at = f.at, .sum = f.sum };
++        f.live += 1;
++        return st;
++    }
++    fn restoreFn(ptr: *anyopaque, _: ?*anyopaque, saved: Saved) anyerror!void {
++        const f = of(ptr);
++        const st: *State = @ptrCast(@alignCast(saved));
++        f.at, f.sum = .{ st.at, st.sum };
++    }
++    fn dropFn(ptr: *anyopaque, saved: Saved) void {
++        const f = of(ptr);
++        const st: *State = @ptrCast(@alignCast(saved));
++        f.gpa.destroy(st);
++        f.live -= 1;
++    }
++};
++
++fn fresh(prompt: []const u32) u64 {
++    var s: u64 = 0;
++    for (prompt) |t| s = s *% 31 +% t;
++    return s;
++}
++
++fn ramp(comptime n: usize, seed: u32) [n]u32 {
++    var out: [n]u32 = undefined;
++    for (&out, 0..) |*t, i| t.* = @intCast((i * 7 + seed) % 97);
++    return out;
++}
++
++/// Run a prompt pass like LaneHost, keeping progress/history marks and stopping before `stop` when cancelled.
++fn progressPass(f: *Fake, s: *Store, a: Allocator, prompt: []const u32, history_len: u32, shared: []const u32, stop: ?usize) !?u64 {
++    const l = try s.lookup(a, prompt, history_len, shared, &.{});
++    var from: u32 = 0;
++    f.at = 0;
++    f.sum = 0;
++    if (l.entry) |e| {
++        try Fake.restoreFn(f, null, e.saved);
++        s.resumed(e, prompt, true);
++        from = e.at;
++    }
++    for (prompt[from..]) |t| {
++        if (stop) |n| if (f.at >= n) return null;
++        f.sum = f.sum *% 31 +% t;
++        f.at += 1;
++        if (std.mem.indexOfScalar(u32, l.marks, f.at) != null)
++            _ = s.keepAs(prompt, f.at, null, &.{}, std.mem.indexOfScalar(u32, l.progress, f.at) != null);
++    }
++    return f.sum;
++}
++
++test "progress states: none unless set; every gap past the resume point, up to half a gap before the history" {
++    const gpa = std.testing.allocator;
++    var arena: std.heap.ArenaAllocator = .init(gpa);
++    defer arena.deinit();
++    const a = arena.allocator();
++    var f: Fake = .{ .gpa = gpa };
++    var s = Store.init(gpa, f.snapshots(), .{ .min_gap = 2, .min_prompt = 0 }, 1 << 20);
++    defer s.deinit();
++    const prompt = ramp(64, 3);
++    try std.testing.expectEqualSlices(u32, &.{}, try s.progressMarks(a, &prompt, 0, 56, &.{}, &.{56}));
++    s.rules.progress_gap = 8;
++    try std.testing.expectEqualSlices(u32, &.{ 8, 16, 24, 32, 40, 48 }, try s.progressMarks(a, &prompt, 0, 56, &.{}, &.{56}));
++    try std.testing.expectEqualSlices(u32, &.{ 24, 32, 40, 48 }, try s.progressMarks(a, &prompt, 20, 56, &.{}, &.{56}));
++    try std.testing.expectEqualSlices(u32, &.{ 32, 40, 48 }, try s.progressMarks(a, &prompt, 23, 56, &.{}, &.{56}));
++    try std.testing.expectEqualSlices(u32, &.{ 24, 40, 48 }, try s.progressMarks(a, &prompt, 20, 56, &.{}, &.{ 33, 56 }));
++    try std.testing.expectEqualSlices(u32, &.{ 8, 16, 24, 32, 40, 48, 56 }, try s.progressMarks(a, &prompt, 0, 0, &.{}, &.{}));
++    s.rules.min_prompt = 65;
++    try std.testing.expectEqualSlices(u32, &.{}, try s.progressMarks(a, &prompt, 0, 56, &.{}, &.{56}));
++    // Lookup lists progress marks both in `marks` and separately in `progress`.
++    s.rules.min_prompt = 0;
++    const l = try s.lookup(a, &prompt, 56, &.{}, &.{});
++    try std.testing.expectEqualSlices(u32, &.{ 8, 16, 24, 32, 40, 48, 56 }, l.marks);
++    try std.testing.expectEqualSlices(u32, &.{ 8, 16, 24, 32, 40, 48 }, l.progress);
++    // With a native grid and replay window, progress marks land on grid chunk ends before the replay window.
++    s.rules.grid = 4;
++    s.rules.window = 8;
++    try std.testing.expectEqualSlices(u32, &.{ 8, 16, 24, 32, 40, 48 }, try s.progressMarks(a, &prompt, 0, 0, &.{}, &.{}));
++    try std.testing.expectEqualSlices(u32, &.{ 8, 16, 24, 32, 40 }, try s.progressMarks(a, &prompt, 0, 58, &.{}, &.{50}));
++}
++
++test "an interrupted pass resumes from its last progress state, equal to a fresh pass; without progress states it starts over" {
++    const gpa = std.testing.allocator;
++    var arena: std.heap.ArenaAllocator = .init(gpa);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const prompt = ramp(64, 3);
++    var f: Fake = .{ .gpa = gpa };
++    var s = Store.init(gpa, f.snapshots(), .{ .min_gap = 2, .min_prompt = 0, .progress_gap = 8 }, 1 << 20);
++    defer s.deinit();
++    // Client cancels 43 tokens in: progress states at 8..40 roll forward, retiring earlier ones.
++    try std.testing.expectEqual(@as(?u64, null), try progressPass(&f, &s, a, &prompt, 62, &.{}, 43));
++    try std.testing.expectEqual(@as(usize, 1), s.entries.items.len);
++    try std.testing.expectEqual(@as(u32, 40), s.entries.items[0].at);
++    try std.testing.expect(s.entries.items[0].progress);
++    try std.testing.expectEqual(@as(u64, 5), s.counts.kept);
++    try std.testing.expectEqual(@as(usize, 1), f.live);
++    // Retry resumes at 40 and retires progress states once the durable history mark at 62 is kept.
++    try std.testing.expectEqual(@as(?u64, fresh(&prompt)), try progressPass(&f, &s, a, &prompt, 62, &.{}, null));
++    try std.testing.expectEqual(@as(u64, 1), s.counts.hits);
++    try std.testing.expectEqual(@as(usize, 1), s.entries.items.len);
++    try std.testing.expectEqual(@as(u32, 62), s.entries.items[0].at);
++    try std.testing.expect(!s.entries.items[0].progress);
++    try std.testing.expectEqual(@as(usize, 1), f.live);
++    try std.testing.expectEqual(@as(u64, 0), s.counts.evicted);
++    // Without progress states, the same interruption keeps nothing and retries from 0.
++    var g: Fake = .{ .gpa = gpa };
++    var off = Store.init(gpa, g.snapshots(), .{ .min_gap = 2, .min_prompt = 0 }, 1 << 20);
++    defer off.deinit();
++    try std.testing.expectEqual(@as(?u64, null), try progressPass(&g, &off, a, &prompt, 62, &.{}, 43));
++    try std.testing.expectEqual(@as(usize, 0), off.entries.items.len);
++    try std.testing.expectEqual(@as(?u64, fresh(&prompt)), try progressPass(&g, &off, a, &prompt, 62, &.{}, null));
++    try std.testing.expectEqual(@as(u64, 0), off.counts.hits);
++}
++
++test "a progress state yields only same-prefix shallower states: other conversations' branch points and progress states stay" {
++    const gpa = std.testing.allocator;
++    var arena: std.heap.ArenaAllocator = .init(gpa);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const other = ramp(40, 11);
++    const prompt = ramp(64, 3);
++    for ([_]u64{ 260, 240 }) |budget| {
++        var f: Fake = .{ .gpa = gpa };
++        var s = Store.init(gpa, f.snapshots(), .{ .min_gap = 2, .min_prompt = 0, .progress_gap = 8 }, budget);
++        defer s.deinit();
++        try std.testing.expectEqual(@as(?u64, fresh(&other)), try progressPass(&f, &s, a, &other, 36, &.{}, null));
++        try std.testing.expectEqual(@as(usize, 1), s.entries.items.len);
++        try std.testing.expectEqual(@as(?u64, null), try progressPass(&f, &s, a, &prompt, 0, &.{}, 20));
++        try std.testing.expect(s.find(&other, &.{}) != null);
++        try std.testing.expectEqual(@as(u64, 0), s.counts.evicted);
++        try std.testing.expectEqual(@as(u64, 0), s.counts.refused);
++        try std.testing.expect(s.held <= s.budget);
++        if (budget == 260) {
++            try std.testing.expectEqual(@as(usize, 2), s.entries.items.len);
++            try std.testing.expectEqual(@as(u32, 16), s.find(&prompt, &.{}).?.at);
++        } else {
++            try std.testing.expectEqual(@as(usize, 1), s.entries.items.len);
++            try std.testing.expect(s.find(&prompt, &.{}) == null);
++        }
++        try std.testing.expectEqual(s.entries.items.len, f.live);
++    }
++    // Multi-conversation tight budget: A holds A0(16), stable(20), A1(36); C holds cancelled progress C_prog(16).
++    const conv_a = ramp(48, 21);
++    const conv_b = ramp(48, 37);
++    const conv_c = ramp(48, 53);
++    var f2: Fake = .{ .gpa = gpa };
++    var s2 = Store.init(gpa, f2.snapshots(), .{ .min_gap = 2, .min_prompt = 0, .progress_gap = 8 }, 500);
++    defer s2.deinit();
++    try std.testing.expectEqual(@as(?u64, fresh(conv_a[0..20])), try progressPass(&f2, &s2, a, conv_a[0..20], 16, &.{}, null));
++    try std.testing.expectEqual(@as(?u64, fresh(conv_a[0..40])), try progressPass(&f2, &s2, a, conv_a[0..40], 36, &.{}, null));
++    try std.testing.expectEqual(@as(?u64, null), try progressPass(&f2, &s2, a, &conv_c, 0, &.{}, 20));
++    try std.testing.expectEqual(@as(usize, 4), s2.entries.items.len); // 116 + 120 + 136 + 116 = 488 bytes held
++    // Unrelated conversation B's progress state (108 bytes) cannot evict A0, A_stable, A1, or C_prog.
++    try std.testing.expectEqual(@as(?u64, null), try progressPass(&f2, &s2, a, &conv_b, 0, &.{}, 20));
++    try std.testing.expectEqual(@as(u64, 0), s2.counts.evicted);
++    try std.testing.expect(s2.find(&conv_b, &.{}) == null);
++    try std.testing.expectEqual(@as(u32, 16), s2.find(conv_a[0..18], &.{}).?.at);
++    try std.testing.expectEqual(@as(u32, 36), s2.find(conv_a[0..40], &.{}).?.at);
++    try std.testing.expectEqual(@as(u32, 16), s2.find(&conv_c, &.{}).?.at);
++    // A's own branch from A0 (sharing 20 tokens) yields shallower A0(16) at at=24 while leaving A1 and C_prog intact.
++    var conv_a_fork = conv_a;
++    for (conv_a_fork[20..]) |*t| t.* = (t.* + 41) % 97;
++    f2.at = 24;
++    try std.testing.expect(s2.keepAs(&conv_a_fork, 24, null, &.{}, true));
++    try std.testing.expectEqual(@as(u32, 24), s2.find(&conv_a_fork, &.{}).?.at);
++    try std.testing.expectEqual(@as(u32, 36), s2.find(conv_a[0..40], &.{}).?.at);
++    try std.testing.expectEqual(@as(u32, 16), s2.find(&conv_c, &.{}).?.at);
++}
++
++test "a history mark at a progress state's place makes it permanent; a shared cut stays while progress states pass it" {
++    const gpa = std.testing.allocator;
++    var arena: std.heap.ArenaAllocator = .init(gpa);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const prompt = ramp(64, 3);
++    var f: Fake = .{ .gpa = gpa };
++    var s = Store.init(gpa, f.snapshots(), .{ .min_gap = 2, .min_prompt = 0, .progress_gap = 8 }, 1 << 20);
++    defer s.deinit();
++    try std.testing.expectEqual(@as(?u64, null), try progressPass(&f, &s, a, &prompt, 62, &.{12}, 35));
++    try std.testing.expectEqual(@as(usize, 2), s.entries.items.len);
++    const cut = s.find(prompt[0..14], &.{}).?;
++    try std.testing.expectEqual(@as(u32, 12), cut.at);
++    try std.testing.expect(!cut.progress);
++    try std.testing.expectEqual(@as(u32, 32), s.find(&prompt, &.{}).?.at);
++    f.at = 32;
++    try std.testing.expect(s.keepAs(&prompt, 32, null, &.{}, false));
++    try std.testing.expect(!s.find(&prompt, &.{}).?.progress);
++    f.at = 40;
++    try std.testing.expect(s.keepAs(&prompt, 40, null, &.{}, true));
++    try std.testing.expectEqual(@as(usize, 3), s.entries.items.len);
++    try std.testing.expectEqual(@as(usize, 3), f.live);
++}
++
++test "Store.lookup frees temporary mark slices when progress mark allocation runs out of memory" {
++    const gpa = std.testing.allocator;
++    var f: Fake = .{ .gpa = gpa };
++    var s = Store.init(gpa, f.snapshots(), .{ .min_gap = 2, .min_prompt = 0, .progress_gap = 8 }, 1 << 20);
++    defer s.deinit();
++    const prompt = ramp(64, 3);
++    for (0..16) |fail_idx| {
++        var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = fail_idx });
++        const a = failing.allocator();
++        if (s.lookup(a, &prompt, 56, &.{12}, &.{})) |l| {
++            a.free(l.marks);
++            a.free(l.progress);
++            break;
++        } else |err| {
++            try std.testing.expectEqual(error.OutOfMemory, err);
++        }
++    }
++}
+diff --git a/zig/src/core/prompt_cache_tier_test.zig b/zig/src/core/prompt_cache_tier_test.zig
+index c7e22d7a..d1c7f63b 100644
+--- a/zig/src/core/prompt_cache_tier_test.zig
++++ b/zig/src/core/prompt_cache_tier_test.zig
+@@ -809,3 +809,79 @@ test "a NoRoom is worth waiting for only when the restores in flight hold the re
+     try std.testing.expectError(error.NoRoom, s.restoreBeginOver(pb, &b, .{}));
+     try std.testing.expect(!s.deferrable(error.NoRoom));
+ }
++
++test "rolling progress states stay RAM-only with a spill tier, preserve ancestor parent/fork across cancel+retry, and enqueue when promoted" {
++    var f: Sum = .{};
++    var tier: FakeTier = .{ .gpa = gpa, .codec = f.codec() };
++    defer tier.deinit();
++    var s = Store.init(gpa, f.snapshots(), .{ .min_prompt = 0, .min_gap = 2, .progress_gap = 8 }, 1 << 20);
++    defer s.deinit();
++    s.setTier(tier.tier(), 0);
++    const p = seq(64, 1);
++
++    // Turn 1 finishes at 16: durable point P1 is enqueued and published to the spill tier.
++    const lin1 = try s.passLineage(null);
++    defer gpa.free(lin1);
++    const j1 = s.join(p[0..20], null, true);
++    try std.testing.expect(keepAt(&s, &f, p[0..20], 16, .{ .group = j1.group, .lineage = lin1 }));
++    s.pump(1000);
++    try std.testing.expectEqual(@as(u64, 1), s.stats.writes_enqueued);
++    const e1 = s.find(&p, &.{}) orelse unreachable;
++    const p1_id = e1.point.?;
++
++    // Turn 2 resumes P1 (at 16), keeps progress states at 24 and 32, and gets interrupted before the final mark at 56.
++    const lin2 = try s.passLineage(e1);
++    defer gpa.free(lin2);
++    s.resumed(e1, &p, true);
++    try std.testing.expect(keepAt(&s, &f, &p, 24, .{ .group = j1.group, .parent = p1_id, .fork = 16, .lineage = lin2, .progress = true }));
++    try std.testing.expect(keepAt(&s, &f, &p, 32, .{ .group = j1.group, .parent = p1_id, .fork = 16, .lineage = lin2, .progress = true }));
++    s.pump(1000);
++    // Zero intermediate NVMe writes were enqueued for 24 or 32, and 24 was retired by 32!
++    try std.testing.expectEqual(@as(u64, 1), s.stats.writes_enqueued);
++    try std.testing.expectEqual(@as(usize, 1), tier.points.items.len);
++    const prog32 = s.find(&p, &.{}) orelse unreachable;
++    try std.testing.expectEqual(@as(u32, 32), prog32.at);
++    try std.testing.expect(prog32.progress and prog32.point == null);
++    try std.testing.expectEqual(@as(?u64, p1_id), prog32.origin_point);
++    try std.testing.expectEqual(@as(u32, 16), prog32.origin_fork);
++
++    // Retry of Turn 2 resumes prog32 (inheriting origin_point=p1_id, fork=16), keeps 40, then keeps durable 56.
++    const parent = prog32.point orelse prog32.origin_point;
++    const fork = if (prog32.point != null) prog32.at else prog32.origin_fork;
++    try std.testing.expectEqual(@as(?u64, p1_id), parent);
++    try std.testing.expectEqual(@as(u32, 16), fork);
++    const lin3 = try s.passLineage(prog32);
++    defer gpa.free(lin3);
++    s.resumed(prog32, &p, true);
++    try std.testing.expect(keepAt(&s, &f, &p, 40, .{ .group = j1.group, .parent = parent, .fork = fork, .lineage = lin3, .progress = true }));
++    try std.testing.expectEqual(@as(u64, 1), s.stats.writes_enqueued); // still zero progress writes!
++    try std.testing.expect(keepAt(&s, &f, &p, 56, .{ .group = j1.group, .parent = parent, .fork = fork, .lineage = lin3, .progress = false }));
++    s.pump(1000);
++    // Final mark 56 retired 32 & 40 and enqueued exactly ONE new durable point P2 whose parent is P1 at fork 16!
++    try std.testing.expectEqual(@as(u64, 2), s.stats.writes_enqueued);
++    try std.testing.expectEqual(@as(usize, 2), tier.points.items.len);
++    const e56 = s.find(&p, &.{}) orelse unreachable;
++    try std.testing.expectEqual(@as(u32, 56), e56.at);
++    try std.testing.expect(!e56.progress and e56.point != null);
++    const p2 = tier.point(e56.point.?).?;
++    try std.testing.expectEqual(@as(?u64, p1_id), p2.parent);
++    try std.testing.expectEqual(@as(u32, 16), p2.fork);
++    // Only e1 (16) and e56 (56) remain in RAM (progress states 24, 32, 40 were all retired).
++    try std.testing.expectEqual(@as(usize, 2), s.entries.items.len);
++    try std.testing.expectEqual(@as(usize, 2), f.live);
++
++    // Promoting a progress state in place enqueues it to the spill tier with its origin_point and origin_fork.
++    const q = seq(64, 201);
++    const lin_q = try s.passLineage(null);
++    defer gpa.free(lin_q);
++    try std.testing.expect(keepAt(&s, &f, &q, 24, .{ .group = 99, .parent = p1_id, .fork = 16, .lineage = lin_q, .progress = true }));
++    try std.testing.expectEqual(@as(u64, 2), s.stats.writes_enqueued);
++    try std.testing.expect(keepAt(&s, &f, &q, 24, .{ .group = 99, .lineage = lin_q, .progress = false }));
++    s.pump(1000);
++    try std.testing.expectEqual(@as(u64, 3), s.stats.writes_enqueued);
++    const eq = s.find(&q, &.{}) orelse unreachable;
++    try std.testing.expect(!eq.progress and eq.point != null);
++    const pq = tier.point(eq.point.?).?;
++    try std.testing.expectEqual(@as(?u64, p1_id), pq.parent);
++    try std.testing.expectEqual(@as(u32, 16), pq.fork);
++}
+diff --git a/zig/src/families/dsv41/lanes.zig b/zig/src/families/dsv41/lanes.zig
+index 3385bb09..95b99645 100644
+--- a/zig/src/families/dsv41/lanes.zig
++++ b/zig/src/families/dsv41/lanes.zig
+@@ -891,7 +891,7 @@ pub const Lanes = struct {
+         if (self.prof) |*p| p.prefills += 1;
+         if (!done.head) return error.NoPromptLogits;
+         // a state read back from disk: the drafter's rings were rebuilt by the replay before the first draft
+-        if (self.spill != null and m.drafting() and done.restored) try m.spillCheckResumed(done.slot, done.len);
++        try self.checkRestoredDraft(self.spill != null, done.restored, done.slot, done.len);
+         const logits = try m.promptLogitsHost();
+         if (logits_sha) {
+             var dg: [32]u8 = undefined;
+@@ -949,10 +949,11 @@ pub const Lanes = struct {
+         // a kept state of this prompt's prefix: the pass resumes at its chunk end, in its extent, or in one of its own
+         // with the kept rows copied there when a live stream holds that extent (a burst's second request on a prompt)
+         s.cached = 0;
+-        const parted: ?PlacedParts = if (kv) |k| try self.placeParts(k, s, size, slot, len) else null;
++        var parted: ?PlacedParts = if (kv) |k| try self.placeParts(k, s, size, slot, len) else null;
+         errdefer if (parted) |pp| kv.?.release(pp.id) catch |err| std.log.err("dsv41: a failed prompt pass kept its part's extent: {s}", .{@errorName(err)});
+         var kept: ?*Snap = if (parted) |pp| pp.kept else null;
+         var moved = if (parted) |pp| pp.moved else false;
++        if (parted) |*pp| pp.kept = null;
+         if (parted == null) if (s.reuse.saved) |p| {
+             const sn: *Snap = @ptrCast(@alignCast(p));
+             // (the cache matched the images before its rows by their digests: its image rows are this prompt's)
+@@ -1062,28 +1063,42 @@ pub const Lanes = struct {
+             try m.setImages(spans.items, rows.items);
+         }
+         const replay = len -| m.cfg.window;
+-        var start: usize = 0;
+-        if (kept) |sn| {
+-            if (try self.begin(.snap_restore)) {
+-                try self.wire.int(gpa, u64, sn.id);
+-                try self.wire.int(gpa, u32, @intCast(slot));
+-                try self.wire.int(gpa, u64, if (parted != null) base else sn.base); // (TF_DS_KV_SHARD: the plan's transfer ran)
+-                try self.wire.int(gpa, u64, base);
+-                try self.wire.int(gpa, u64, sn.at);
+-                try self.flush();
+-            }
+-            if (base != sn.base and parted == null) {
+-                if (self.spill) |t| t.bump(base, base + sn.at);
+-                try m.copyExtent(sn.base, base, sn.at);
+-            }
+-            try m.snapCopy(slot, sn.buf.ptr, false);
+-            start = sn.at;
+-            s.cached = @intCast(sn.at);
+-        }
++        const res = try self.restoreKept(s, &kept, slot, base, parted != null);
++        const start = res.start;
+         // where this pass keeps states: the cache's marks and its last chunk end before the replay (the served lane's
+         // kept prompt), each at the chunk end at or before it
+         const last_end = @min(replay, len - 1) / model.chunk_rows * model.chunk_rows;
+-        self.fill = .{ .s = s, .slot = slot, .len = len, .replay = replay, .last_end = last_end, .start = start, .base = base, .restored = if (kept) |sn| sn.restored else false, .part = if (parted) |pp| pp.id else null };
++        self.fill = .{ .s = s, .slot = slot, .len = len, .replay = replay, .last_end = last_end, .start = start, .base = base, .restored = res.restored, .part = if (parted) |pp| pp.id else null };
++    }
++
++    const Restored = struct { start: usize, restored: bool };
++
++    /// Restore `*kept` into `slot` and clear raw `*Snap` pointers before a chunk hook can retire the state.
++    fn restoreKept(self: *Lanes, s: *lanes.Stream, kept: *?*Snap, slot: usize, base: usize, parted: bool) !Restored {
++        const sn = kept.* orelse return .{ .start = 0, .restored = false };
++        const restored = sn.restored;
++        if (try self.begin(.snap_restore)) {
++            try self.wire.int(self.gpa, u64, sn.id);
++            try self.wire.int(self.gpa, u32, @intCast(slot));
++            try self.wire.int(self.gpa, u64, if (parted) base else sn.base); // (TF_DS_KV_SHARD: the plan's transfer ran)
++            try self.wire.int(self.gpa, u64, base);
++            try self.wire.int(self.gpa, u64, sn.at);
++            try self.flush();
++        }
++        if (base != sn.base and !parted) {
++            if (self.spill) |t| t.bump(base, base + sn.at);
++            try self.m.copyExtent(sn.base, base, sn.at);
++        }
++        try self.m.snapCopy(slot, sn.buf.ptr, false);
++        const start = sn.at;
++        s.cached = @intCast(start);
++        kept.* = null;
++        s.reuse.saved = null;
++        return .{ .start = start, .restored = restored };
++    }
++
++    fn checkRestoredDraft(self: *const Lanes, has_spill: bool, restored: bool, slot: usize, len: usize) !void {
++        if (has_spill and self.m.drafting() and restored) try self.m.spillCheckResumed(slot, len);
+     }
+ 
+     fn firstFn(ptr: *anyopaque, s: *lanes.Stream, position: u64) anyerror!u64 {
+@@ -1347,11 +1362,16 @@ pub const Lanes = struct {
+         const s: *const lanes.Stream = @ptrCast(@alignCast(owner orelse return error.NoStream));
+         const l = self.streams.getPtr(s) orelse return error.UnknownStream;
+         if (at == 0 or at % model.chunk_rows != 0 or at > s.prompt_len -| self.m.cfg.window) return error.NotAChunkEnd;
+-        const sn = try self.gpa.create(Snap);
+-        errdefer self.gpa.destroy(sn);
+-        sn.* = .{ .id = self.next_snap, .at = at, .base = l.base, .end = l.end, .part = l.part, .buf = try cuda.DeviceBuffer.alloc(self.m.ctx.d, self.m.snapBytes()), .slot = @intCast(l.slot) };
+-        errdefer sn.buf.free();
+-        try self.snaps.append(self.gpa, sn);
++        const sn = blk: {
++            const sn = try self.gpa.create(Snap);
++            errdefer self.gpa.destroy(sn);
++            sn.* = .{ .id = self.next_snap, .at = at, .base = l.base, .end = l.end, .part = l.part, .buf = try cuda.DeviceBuffer.alloc(self.m.ctx.d, self.m.snapBytes()), .slot = @intCast(l.slot) };
++            errdefer sn.buf.free();
++            try self.snaps.append(self.gpa, sn);
++            break :blk sn;
++        };
++        // Remove the registered list entry and drop on peer before freeing so failed saves leave no dangling key.
++        errdefer snapDropFn(ptr, sn);
+         self.next_snap += 1;
+         if (try self.begin(.snap_save)) {
+             try self.wire.int(self.gpa, u64, sn.id);
+@@ -2755,3 +2775,174 @@ test "spill + shard: an owner-sharded reserve lands only on the follower planner
+     other.generation = 0;
+     try std.testing.expectError(error.SpillNotAgreed, pf.reserve(h, other));
+ }
++
++test "failed snapshot save unregisters before freeing and a later save still works" {
++    // Exercise the real Lanes/Model save path with CPU driver fakes (no CUDA context; NOT_READY is silent).
++    const Fake = struct {
++        var held: usize = 0;
++        var copies: usize = 0;
++        var fail_copy = true;
++        fn setCurrent(_: cuda.abi.Context) callconv(.c) cuda.abi.Result {
++            return cuda.abi.success;
++        }
++        fn alloc(p: *cuda.abi.DevicePtr, _: usize) callconv(.c) cuda.abi.Result {
++            std.debug.assert(held == 0);
++            held += 1;
++            p.* = 4096;
++            return cuda.abi.success;
++        }
++        fn free(p: cuda.abi.DevicePtr) callconv(.c) cuda.abi.Result {
++            std.debug.assert(p == 4096 and held == 1);
++            held -= 1;
++            return cuda.abi.success;
++        }
++        fn copy(_: cuda.abi.DevicePtr, _: cuda.abi.DevicePtr, _: usize, _: cuda.abi.Stream) callconv(.c) cuda.abi.Result {
++            copies += 1;
++            return if (fail_copy) cuda.abi.error_not_ready else cuda.abi.success;
++        }
++    };
++    Fake.held = 0;
++    Fake.copies = 0;
++    Fake.fail_copy = true;
++    var driver: cuda.Driver = undefined;
++    driver.api.cuCtxSetCurrent = Fake.setCurrent;
++    driver.api.cuMemAlloc_v2 = Fake.alloc;
++    driver.api.cuMemFree_v2 = Fake.free;
++    driver.api.cuMemcpyDtoDAsync_v2 = Fake.copy;
++    var ctx: cuda.Context = .{ .d = &driver, .device = 0, .handle = null };
++    var m: Model = undefined;
++    m.ctx = &ctx;
++    m.cfg.window = 128;
++    m.cfg.head_dim = 8;
++    m.cfg.layers = 0;
++    m.caches = .{};
++    m.eng.c = &m.cfg;
++    m.stream.handle = null;
++    var rings = [_]u64{8192};
++    m.rings = &rings;
++    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null };
++    defer ln.snaps.deinit(std.testing.allocator);
++    defer ln.streams.deinit(std.testing.allocator);
++    var stream: lanes.Stream = undefined;
++    stream.prompt_len = 2 * model.chunk_rows;
++    try ln.streams.put(std.testing.allocator, &stream, .{ .slot = 0, .base = 0, .end = 4 * model.chunk_rows });
++    const bytes0 = cuda.usage(false).device;
++    for (0..32) |_| {
++        try std.testing.expectError(error.NotReady, Lanes.snapSaveFn(&ln, &stream, model.chunk_rows));
++        try std.testing.expectEqual(@as(usize, 0), ln.snaps.items.len);
++        try std.testing.expectEqual(@as(usize, 0), Fake.held);
++        try std.testing.expectEqual(bytes0, cuda.usage(false).device);
++    }
++    Fake.fail_copy = false;
++    const saved = try Lanes.snapSaveFn(&ln, &stream, model.chunk_rows);
++    try std.testing.expect(Lanes.usableFn(&ln, saved, 2 * model.chunk_rows));
++    try std.testing.expectEqual(@as(usize, 1), ln.snaps.items.len);
++    try std.testing.expectEqual(@as(usize, 33), Fake.copies);
++    Lanes.snapDropFn(&ln, saved);
++    try std.testing.expectEqual(@as(usize, 0), ln.snaps.items.len);
++    try std.testing.expectEqual(@as(usize, 0), Fake.held);
++    try std.testing.expectEqual(bytes0, cuda.usage(false).device);
++}
++
++test "restored snapshot pointer is dropped before mid-pass progress retirement and post-fill draft check" {
++    // Retiring a resumed progress state mid-pass frees its Snap; post-fill checks read the copied restored flag.
++    const Fake = struct {
++        var next_ptr: cuda.abi.DevicePtr = 4096;
++        var held: usize = 0;
++        var fail_copy = false;
++        fn setCurrent(_: cuda.abi.Context) callconv(.c) cuda.abi.Result {
++            return cuda.abi.success;
++        }
++        fn alloc(p: *cuda.abi.DevicePtr, _: usize) callconv(.c) cuda.abi.Result {
++            p.* = next_ptr;
++            next_ptr += 4096;
++            held += 1;
++            return cuda.abi.success;
++        }
++        fn free(_: cuda.abi.DevicePtr) callconv(.c) cuda.abi.Result {
++            std.debug.assert(held > 0);
++            held -= 1;
++            return cuda.abi.success;
++        }
++        fn copy(_: cuda.abi.DevicePtr, _: cuda.abi.DevicePtr, _: usize, _: cuda.abi.Stream) callconv(.c) cuda.abi.Result {
++            return if (fail_copy) cuda.abi.error_not_ready else cuda.abi.success;
++        }
++    };
++    Fake.next_ptr = 4096;
++    Fake.held = 0;
++    Fake.fail_copy = false;
++    var driver: cuda.Driver = undefined;
++    driver.api.cuCtxSetCurrent = Fake.setCurrent;
++    driver.api.cuMemAlloc_v2 = Fake.alloc;
++    driver.api.cuMemFree_v2 = Fake.free;
++    driver.api.cuMemcpyDtoDAsync_v2 = Fake.copy;
++    var ctx: cuda.Context = .{ .d = &driver, .device = 0, .handle = null };
++    var m: Model = undefined;
++    m.ctx = &ctx;
++    m.streams = 1;
++    m.cfg.window = 128;
++    m.cfg.head_dim = 8;
++    m.cfg.layers = 0;
++    m.caches = .{};
++    m.eng.c = &m.cfg;
++    m.stream.handle = null;
++    const dr_val: draft.Drafter = undefined;
++    m.dr = dr_val;
++    try std.testing.expect(m.drafting());
++    m.dpool = .{ .stages = 0, .slots = 1, .ring = 176, .hd = 8 };
++    var rings = [_]u64{8192};
++    m.rings = &rings;
++    var ln: Lanes = .{ .gpa = std.testing.allocator, .m = &m, .peer = null };
++    defer ln.snaps.deinit(std.testing.allocator);
++    defer ln.streams.deinit(std.testing.allocator);
++    const c = model.chunk_rows;
++    const vt: spill_tier.prompt_cache.Snapshots.VTable = .{
++        .bytes = Lanes.snapBytesFn,
++        .save = Lanes.snapSaveFn,
++        .restore = Lanes.snapRestoreFn,
++        .drop = Lanes.snapDropFn,
++        .usable = Lanes.usableFn,
++    };
++    var store = spill_tier.prompt_cache.Store.init(std.testing.allocator, .{ .ptr = &ln, .vtable = &vt }, .{ .min_prompt = 0, .min_gap = c, .grid = c, .window = 128, .progress_gap = 2 * c }, 1 << 20);
++    defer store.deinit();
++    const prompt = try std.testing.allocator.alloc(u32, 6 * c);
++    defer std.testing.allocator.free(prompt);
++    for (prompt, 0..) |*t, i| t.* = @intCast(i + 1);
++    var stream: lanes.Stream = undefined;
++    stream.cached = 0;
++    stream.reuse = .{};
++    stream.prompt_len = 6 * c;
++    try ln.streams.put(std.testing.allocator, &stream, .{ .slot = 0, .base = 0, .end = 8 * c });
++    try std.testing.expect(store.keepWith(prompt, 2 * c, &stream, &.{}, .{ .progress = true }));
++    try std.testing.expectEqual(@as(usize, 1), ln.snaps.items.len);
++    const e1 = store.find(prompt, &.{}) orelse unreachable;
++    var kept: ?*Snap = @ptrCast(@alignCast(e1.saved));
++    stream.reuse.saved = e1.saved;
++    const res = try ln.restoreKept(&stream, &kept, 0, 0, false);
++    try std.testing.expect(kept == null and stream.reuse.saved == null);
++    try std.testing.expectEqual(@as(usize, 2 * c), res.start);
++    try std.testing.expect(!res.restored);
++    store.resumed(e1, prompt, true);
++    try std.testing.expect(store.keepWith(prompt, 4 * c, &stream, &.{}, .{ .progress = true }));
++    try std.testing.expectEqual(@as(usize, 1), ln.snaps.items.len);
++    try std.testing.expectEqual(@as(usize, 1), Fake.held);
++    try ln.checkRestoredDraft(true, res.restored, 0, 6 * c);
++    const e2 = store.find(prompt, &.{}) orelse unreachable;
++    const sn2: *Snap = @ptrCast(@alignCast(e2.saved));
++    sn2.restored = true;
++    kept = sn2;
++    stream.reuse.saved = e2.saved;
++    stream.cached = 0;
++    Fake.fail_copy = true;
++    try std.testing.expectError(error.NotReady, ln.restoreKept(&stream, &kept, 0, 0, false));
++    try std.testing.expectEqual(@as(u32, 0), stream.cached);
++    try std.testing.expectEqual(@as(usize, 1), ln.snaps.items.len);
++    Fake.fail_copy = false;
++    const res2 = try ln.restoreKept(&stream, &kept, 0, 0, false);
++    try std.testing.expect(kept == null and stream.reuse.saved == null and res2.restored);
++    store.resumed(e2, prompt, true);
++    try std.testing.expect(store.keepWith(prompt, 5 * c, &stream, &.{}, .{ .progress = false }));
++    try std.testing.expectError(error.DraftNotRebuilt, ln.checkRestoredDraft(true, res2.restored, 0, 6 * c));
++    m.dpool.?.absorbed[0] = 6 * c;
++    try ln.checkRestoredDraft(true, res2.restored, 0, 6 * c);
++}
+diff --git a/zig/src/families/dsv41/native.zig b/zig/src/families/dsv41/native.zig
+index 210a892f..b2000ede 100644
+--- a/zig/src/families/dsv41/native.zig
++++ b/zig/src/families/dsv41/native.zig
+@@ -273,13 +273,9 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
+     st.lanes.vision = st.vision;
+     // the pool is the model's (preallocated): a stream takes no device memory of its own
+     const L = lanes_mod.Lanes;
+-    var snaps: Snaps = .{ .ptr = &st.lanes, .bytes = L.snapBytesFn, .save = L.snapSaveFn, .restore = L.snapRestoreFn, .drop = L.snapDropFn, .tail = @intCast(st.m.cfg.window) };
++    const snaps: Snaps = .{ .ptr = &st.lanes, .bytes = L.snapBytesFn, .save = L.snapSaveFn, .restore = L.snapRestoreFn, .drop = L.snapDropFn, .usable = L.usableFn, .tail = @intCast(st.m.cfg.window) };
+     const window: ?usize = if (st.m.kvs != null or st.m.pool_cap != o.context) st.m.window_cap else null;
+-    var tier: ?spill_tier.prompt_cache.Tier = null;
+-    if (o.spill != null) {
+-        snaps.usable = L.usableFn;
+-        tier = st.lanes.spill.?.tier();
+-    }
++    const tier: ?spill_tier.prompt_cache.Tier = if (o.spill != null) st.lanes.spill.?.tier() else null;
+     const kv_parts: ?lanes.kv_parts.Source = if (st.m.kvs != null) .{ .ctx = &st.lanes, .read = L.kvPartsFn } else null;
+     const pair: ?Pair = if (pair_mode == .exit) .{ .watch = pairWatch, .abort = pairAbort } else null;
+     if (pair != null) std.log.info("dsv41: a broken rank pair ends this server with status {d} for a restart of both ranks (TF_DS_PAIR_BROKEN=degrade: requests fail one by one instead)", .{api.LaneHost.pair_exit_code});
+diff --git a/zig/src/native/cuda.zig b/zig/src/native/cuda.zig
+index ecf42473..0e009af1 100644
+--- a/zig/src/native/cuda.zig
++++ b/zig/src/native/cuda.zig
+@@ -39,6 +39,22 @@ fn getenv(name: [:0]const u8) ?[]const u8 {
+     return std.mem.span(std.c.getenv(name) orelse return null);
+ }
+ 
++/// TF_DS_PROMPT_PROGRESS_TOKENS: rolling progress interval rounded down to chunk ends (>= 4 chunks; else 0).
++fn progressGap(text: ?[]const u8, rows: u32) u32 {
++    const n = (envNumber(text) catch return 0) orelse return 0;
++    if (rows == 0 or n < 4 * rows) return 0;
++    return n / rows * rows;
++}
++
++test "prompt progress states: off unless set, whole chunks, at least four of them" {
++    try std.testing.expectEqual(@as(u32, 0), progressGap(null, 2048));
++    try std.testing.expectEqual(@as(u32, 0), progressGap("0", 2048));
++    try std.testing.expectEqual(@as(u32, 0), progressGap("x", 2048));
++    try std.testing.expectEqual(@as(u32, 0), progressGap("8191", 2048));
++    try std.testing.expectEqual(@as(u32, 8192), progressGap("8192", 2048));
++    try std.testing.expectEqual(@as(u32, 65536), progressGap("66000", 2048));
++}
++
+ /// A variable's whole number: null when unset or empty, an error for anything else that is not one.
+ fn envNumber(text: ?[]const u8) error{Invalid}!?u32 {
+     const t = std.mem.trim(u8, text orelse return null, " ");
+@@ -449,20 +465,20 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, o: api.O
+     if (@hasField(@TypeOf(loaded), "snaps")) if (loaded.snaps) |sn| {
+         const want: u64 = @intFromFloat((o.prompt_cache_gib orelse 0.5) * gib);
+         if (want > 0) {
+-            h.snap_vt = .{ .bytes = sn.bytes, .save = sn.save, .restore = sn.restore, .drop = sn.drop };
+-            h.cache = api.prompt_cache.Store.init(gpa, .{ .ptr = sn.ptr, .vtable = &h.snap_vt }, .{ .tail = if (@hasField(@TypeOf(sn), "tail")) sn.tail else 0 }, want);
++            h.snap_vt = .{ .bytes = sn.bytes, .save = sn.save, .restore = sn.restore, .drop = sn.drop, .usable = if (@hasField(@TypeOf(sn), "usable")) sn.usable else null };
++            h.cache = api.prompt_cache.Store.init(gpa, .{ .ptr = sn.ptr, .vtable = &h.snap_vt }, .{
++                .tail = if (@hasField(@TypeOf(sn), "tail")) sn.tail else 0,
++                .grid = if (@hasField(@TypeOf(loaded), "grid")) loaded.grid else 0,
++                .window = if (@hasField(@TypeOf(loaded), "replay")) loaded.replay else 0,
++                .progress_gap = progressGap(getenv("TF_DS_PROMPT_PROGRESS_TOKENS"), F.prompt_rows),
++            }, want);
+             // the spill tier (off by default: nothing below runs then)
+             if (@hasField(@TypeOf(loaded), "tier")) {
+                 const store = &h.cache.?;
+                 if (loaded.tier) |t| {
+-                    if (@hasField(@TypeOf(sn), "usable")) h.snap_vt.usable = sn.usable;
+                     var seed: [4]u8 = undefined;
+                     io.random(&seed);
+                     store.setTier(t, std.mem.readInt(u32, &seed, .little));
+-                }
+-                if (loaded.tier != null) {
+-                    store.rules.grid = loaded.grid; // the native rule: 0 < at < len, on the chunk grid, before the replay
+-                    store.rules.window = loaded.replay;
+                     h.spill = o.spill;
+                 }
+             }

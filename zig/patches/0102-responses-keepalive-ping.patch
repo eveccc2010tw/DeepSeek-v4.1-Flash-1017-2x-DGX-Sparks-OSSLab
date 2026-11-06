@@ -1,0 +1,45 @@
+From 7efb128830a3cc8b381e6d57a5063c5530b3cc08 Mon Sep 17 00:00:00 2001
+From: OSSLab <admin@asources.com>
+Date: Sat, 07 Nov 2026 02:26:18 +0800
+Subject: [PATCH] Keep Responses and Anthropic streams alive
+
+---
+ zig/src/server/anthropic.zig | 1 +
+ zig/src/server/responses.zig | 9 ++++++++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/zig/src/server/anthropic.zig b/zig/src/server/anthropic.zig
+index 6fc62239..3933be5d 100644
+--- a/zig/src/server/anthropic.zig
++++ b/zig/src/server/anthropic.zig
+@@ -111,6 +111,7 @@ const Wire = struct {
+ 
+     fn ping(ctx: *anyopaque) error{Closed}!void {
+         const w: *Wire = @ptrCast(@alignCast(ctx));
++        if (!w.opened) return;
+         const o = json.newObject(w.reply.a) catch return error.Closed;
+         o.put(w.reply.a, "type", .{ .string = "ping" }) catch return error.Closed;
+         return sse.event(w.reply.conn, w.reply.a, "ping", .{ .object = o });
+diff --git a/zig/src/server/responses.zig b/zig/src/server/responses.zig
+index 309aade4..1c7d40a8 100644
+--- a/zig/src/server/responses.zig
++++ b/zig/src/server/responses.zig
+@@ -203,7 +203,14 @@ const Wire = struct {
+     payload: Value = .null,
+ 
+     fn out(w: *Wire) openai.Out {
+-        return .{ .ctx = w, .vt = &.{ .open = open, .event = event, .reply = whole } };
++        return .{ .ctx = w, .vt = &.{ .open = open, .event = event, .reply = whole, .ping = ping } };
++    }
++
++    /// Emit an SSE `: ping` comment while idle once the stream is open so client body-idle timers stay alive.
++    fn ping(ctx: *anyopaque) error{Closed}!void {
++        const w: *Wire = @ptrCast(@alignCast(ctx));
++        if (!w.opened) return;
++        return sse.comment(w.reply.conn, "ping");
+     }
+ 
+     fn open(ctx: *anyopaque) error{Closed}!void {
+-- 
+2.43.0
+

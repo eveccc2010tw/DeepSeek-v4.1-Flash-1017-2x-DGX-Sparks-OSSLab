@@ -1,0 +1,91 @@
+From 171052a7 Mon Sep 17 00:00:00 2001
+From: OSSLab <admin@asources.com>
+Subject: [PATCH] Grow Responses text and tool arguments geometrically
+
+Source: sehoon123/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks-Tuned
+171052a7d40745ba43f1d9fcb01cb3c2643d93923, patch 0060 Responses section.
+Register the regression in the server suite; observed fail-first above 1 MiB.
+
+diff --git a/zig/src/server/responses.zig b/zig/src/server/responses.zig
+index 1c7d40a8..32d307f1 100644
+--- a/zig/src/server/responses.zig
++++ b/zig/src/server/responses.zig
+@@ -245,6 +245,9 @@ const Reply = struct {
+     items: std.ArrayList(*json.Object) = .empty,
+     current: ?*json.Object = null,
+     calls: std.AutoArrayHashMapUnmanaged(i64, *json.Object) = .empty,
++    /// (bundle 10) each item's text or arguments so far, grown in place: a fresh copy of the whole text per delta held
++    /// the square of its length until the reply ended (about 0.66 GB for a think run to the budget)
++    grown: std.AutoHashMapUnmanaged(*json.Object, std.ArrayList(u8)) = .empty,
+     seq: u64 = 0,
+     final: ?Value = null,
+ 
+@@ -351,7 +354,7 @@ const Reply = struct {
+         const reuse = if (r.current) |c| std.mem.eql(u8, c.get("type").?.string, kind) else false;
+         const item = if (reuse) r.current.? else try r.open(kind, "", "");
+         const part = item.get("content").?.array[0].object;
+-        try r.put(part, "text", .{ .string = std.mem.concat(r.a, u8, &.{ part.get("text").?.string, text }) catch return error.Closed });
++        try r.put(part, "text", .{ .string = try r.append(item, text) });
+         const where_id = item.get("id").?;
+         const where_index = try r.int(r.index(item));
+         if (std.mem.eql(u8, kind, "message")) {
+@@ -359,6 +362,15 @@ const Reply = struct {
+         } else try r.event("response.reasoning_text.delta", &.{ .{ "item_id", where_id }, .{ "output_index", where_index }, .{ "content_index", .{ .int = "0" } }, .{ "delta", .{ .string = text } } });
+     }
+ 
++    /// `item`'s text (or arguments) with `piece` appended, in its buffer: the earlier slices stay valid (the request's
++    /// arena keeps them), and a buffer that grows by doubling copies each byte a few times instead of once a delta.
++    fn append(r: *Reply, item: *json.Object, piece: []const u8) E![]const u8 {
++        const got = r.grown.getOrPut(r.a, item) catch return error.Closed;
++        if (!got.found_existing) got.value_ptr.* = .empty;
++        got.value_ptr.appendSlice(r.a, piece) catch return error.Closed;
++        return got.value_ptr.items;
++    }
++
+     fn textOf(v: ?Value) ?[]const u8 {
+         const x = v orelse return null;
+         return if (x == .string and x.string.len > 0) x.string else null;
+@@ -382,7 +394,7 @@ const Reply = struct {
+                 break :blk made;
+             };
+             if (textOf(function.get("arguments"))) |args| {
+-                try r.put(item, "arguments", .{ .string = std.mem.concat(r.a, u8, &.{ item.get("arguments").?.string, args }) catch return error.Closed });
++                try r.put(item, "arguments", .{ .string = try r.append(item, args) });
+                 try r.event("response.function_call_arguments.delta", &.{ .{ "item_id", item.get("id").? }, .{ "output_index", try r.int(r.index(item)) }, .{ "delta", .{ .string = args } } });
+             }
+         }
+@@ -491,3 +503,22 @@ const Reply = struct {
+         return r.finish(if (reason != null and reason.? == .string) reason.?.string else null, data.get("usage"), data.get("tensorfold"));
+     }
+ };
++
++test "bundle10: a long streamed reply's text grows in place, not a copy of it per delta" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    // (the writes need only the allocator and the items; a reply that does not stream sends no events)
++    var r: Reply = .{ .srv = undefined, .a = arena.allocator(), .conn = undefined, .base = undefined, .streaming = false, .keep = false, .added = &.{}, .cx = undefined };
++    const pieces = 4000;
++    for (0..pieces) |_| try r.write("reasoning", "abcd");
++    for (0..pieces) |_| try r.write("message", "efgh");
++    try std.testing.expectEqual(@as(usize, 2), r.items.items.len);
++    const thought = r.items.items[0].get("content").?.array[0].object.get("text").?.string;
++    const said = r.items.items[1].get("content").?.array[0].object.get("text").?.string;
++    try std.testing.expectEqual(@as(usize, 4 * pieces), thought.len);
++    try std.testing.expectEqual(@as(usize, 4 * pieces), said.len);
++    try std.testing.expectEqualStrings("abcdabcd", thought[0..8]);
++    try std.testing.expectEqualStrings("efghefgh", said[said.len - 8 ..]);
++    // 32 KB of text: a copy per delta allocated about 64 MB; grown in place, well under 1 MiB
++    try std.testing.expect(arena.queryCapacity() < 1 << 20);
++}
+diff --git a/zig/src/server/root.zig b/zig/src/server/root.zig
+index 8259f7e6..045eea96 100644
+--- a/zig/src/server/root.zig
++++ b/zig/src/server/root.zig
+@@ -21,6 +21,7 @@ test {
+     _ = @import("fields.zig");
+     _ = @import("reply_text.zig");
+     _ = @import("tool_parse.zig");
++    _ = @import("responses.zig");
+     _ = @import("tool_stream.zig");
+     _ = @import("dsml_stream_test.zig");
+     _ = @import("dsml_fuzz_test.zig");
