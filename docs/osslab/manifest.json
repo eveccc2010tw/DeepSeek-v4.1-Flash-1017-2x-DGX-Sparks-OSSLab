@@ -23,6 +23,19 @@
     "tools/prepare-mia-zig-container.py": "3c785666bb08c8c10a507ede51fac1165cee00322fb369fd6303f3eefdb09f80",
     "tools/accept-mia-current.py": "86c8d313353bf222c269bf70d144d2d95e4845dc540d244ac8a3994d60856684",
     "tools/prepare-prefix-container.py": "209a1abc51c8c3ca1d1e69954883273e112b891423279a81186d9c3b9a225121",
-    "tools/benchmark-matched.py": "323ac84f7b8a057b6c6253d4fc06b9c7abcae8c6f9594a0a27926e19d8fc7e9f"
+    "tools/benchmark-matched.py": "323ac84f7b8a057b6c6253d4fc06b9c7abcae8c6f9594a0a27926e19d8fc7e9f",
+    "tools/supervise-native-pair.py": "54e03d0104bc0278365851978f804a41763d185ef89d927fa4e61d16cf8e6863",
+    "tests/test_native_pair.py": "559bd5217a3ad8da18aebc3156bbb72d28118e9d2f6d047e809eceed2d5ce253",
+    "examples/osslab-native-pair.json": "a65fc209134bd63a082c8980f3743d9e063ea3a3bce80d7c6753a41b7f033607",
+    "examples/osslab-native-pair.service": "1ed8867042ce4c52168babb208e5d38f95de1c662819848eeec875e0b66aef02"
+  },
+  "model_variant": {
+    "name": "Abliterated / ABLIT (去限制權重版)",
+    "base_model": "Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw",
+    "base_revision": "aee640e2afba93be683bb5b9b420115fe7fbac20",
+    "overlay_model": "drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated",
+    "overlay_revision": "d6681ac778ecbd7b422382ff6af88fb3d2debcb7",
+    "method": "Prepared attention output-projection weight graft; no runtime GLP steering",
+    "behavioral_scope": "Weight identity and API/speed acceptance verified; refusal-reduction or general safety/quality evaluation was not performed."
   }
 }

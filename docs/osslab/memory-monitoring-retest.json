@@ -1,0 +1,44 @@
+{
+  "measured_at": "2026-11-07T07:06:11.685178+08:00",
+  "sampling": "one snapshot before and one after the four-request matched benchmark; not peak telemetry",
+  "before": [
+    {
+      "rank": 0,
+      "mem_available_gib": 7.014194488525391,
+      "swap_free_gib": 15.999683380126953,
+      "running": true,
+      "oom_killed": false,
+      "guard_running": true
+    },
+    {
+      "rank": 1,
+      "mem_available_gib": 7.512630462646484,
+      "swap_free_gib": 15.999698638916016,
+      "running": true,
+      "oom_killed": false,
+      "guard_running": true
+    }
+  ],
+  "after": [
+    {
+      "rank": 0,
+      "mem_available_gib": 7.0268707275390625,
+      "swap_free_gib": 15.999683380126953,
+      "running": true,
+      "oom_killed": false,
+      "guard_running": true
+    },
+    {
+      "rank": 1,
+      "mem_available_gib": 7.4909515380859375,
+      "swap_free_gib": 15.999698638916016,
+      "running": true,
+      "oom_killed": false,
+      "guard_running": true
+    }
+  ],
+  "supervisor_active": true,
+  "health_http_status": 200,
+  "all_guards_running": true,
+  "all_ranks_running_without_oom": true
+}

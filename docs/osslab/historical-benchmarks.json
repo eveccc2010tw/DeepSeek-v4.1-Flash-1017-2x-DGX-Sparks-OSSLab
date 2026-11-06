@@ -1,0 +1,676 @@
+{
+  "source_commit": "44b733fb1fd5cc55535fac5b5ae141d541017b02",
+  "scope": "Historical observations of complete deployments. Weights, engine, context, streams and draft settings differ; these are not isolated optimization measurements. Times use Asia/Taipei.",
+  "early_vllm_tensorfold": {
+    "source": {
+      "path": "benchmarks.json",
+      "sha256": "5f2cde2663ae3ede59a6792ffc6c5154be6a8a6c9f9d42fde6160bad7ab59b78"
+    },
+    "recorded_on": "2026-10-19",
+    "hardware": "NVIDIA DGX Spark + ASUS GX10; TP2; NCCL RDMA",
+    "checkpoint": "LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw",
+    "steering_alpha": 0.75,
+    "matched_prompts": {
+      "conditions": {
+        "temperature": 0,
+        "top_p": 1,
+        "thinking": false,
+        "baseline_context_tokens": 393216,
+        "current_context_tokens": 786432,
+        "current_drafts": 5,
+        "baseline_engine": "vLLM",
+        "current_engine": "TensorFold + GLP + NCCL RDMA"
+      },
+      "results": {
+        "short": {
+          "before": {
+            "rounds": 3,
+            "prompt_tokens": [
+              103,
+              103,
+              103
+            ],
+            "completion_tokens": [
+              256,
+              256,
+              256
+            ],
+            "median_decode_tps": 24.02773479026405,
+            "median_ttft_seconds": 0.5347073720040498,
+            "median_total_seconds": 11.144008343995665
+          },
+          "after": {
+            "rounds": 3,
+            "prompt_tokens": [
+              103,
+              103,
+              103
+            ],
+            "completion_tokens": [
+              256,
+              256,
+              256
+            ],
+            "median_decode_tps": 72.8997326097596,
+            "median_ttft_seconds": 0.3557568120013457,
+            "median_total_seconds": 3.8544457410025643
+          },
+          "decode_speedup": 3.0339827389512517,
+          "total_seconds_reduction_percent": 65.41239361975784,
+          "prompt_hashes_match": true
+        },
+        "context": {
+          "before": {
+            "rounds": 1,
+            "prompt_tokens": [
+              1735
+            ],
+            "completion_tokens": [
+              128
+            ],
+            "median_decode_tps": 23.979007130712912,
+            "median_ttft_seconds": 2.6384254959993996,
+            "median_total_seconds": 7.934874735001358
+          },
+          "after": {
+            "rounds": 1,
+            "prompt_tokens": [
+              1735
+            ],
+            "completion_tokens": [
+              128
+            ],
+            "median_decode_tps": 65.46423705204639,
+            "median_ttft_seconds": 1.5027146240026923,
+            "median_total_seconds": 3.4428445160010597
+          },
+          "decode_speedup": 2.73006453916927,
+          "total_seconds_reduction_percent": 56.61123041029998,
+          "prompt_hashes_match": true
+        }
+      }
+    }
+  },
+  "eaq_v1_trial": {
+    "source": {
+      "path": "docs/records/mia-native-ablit-comparison.json",
+      "sha256": "e1a49a300c1ef11d94d917533c6f5e19a60ee4cb3550d27329e808e0f037f7fc"
+    },
+    "recorded_at": "2026-10-21T02:38:46.399480+08:00",
+    "recipe_revision": "31eea4608f8bb292a92e2f7a1db400e928620c78",
+    "candidate_model_revision": "45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b",
+    "candidate_context_tokens": 1048576,
+    "candidate_parallel": 1,
+    "baseline": {
+      "label": "easthambuilds-drow-1m-pre-mia",
+      "measured_at": "2026-10-21T01:49:24.414828+08:00",
+      "method": "(completion_tokens - 1) / (last text event - first text event)",
+      "results": [
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.4681157390004955,
+          "last_token_seconds": 3.5560887940227985,
+          "total_seconds": 3.5561370970099233,
+          "decode_tokens_per_second": 82.5784407623849,
+          "output_sha256": "b95976ae0dc72567d10a4bbbcea39183a81e98451406890b2d122ea9d84db280",
+          "output_chars": 1186,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 1,
+          "prompt_sha256": "be85998d0d9905e221c6a8f995a4aba6827a07ce16c42f5a4b2fd2f3024c1efc",
+          "max_tokens": 256,
+          "measured_at": "2026-10-21T01:49:27.971444+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.3162041030009277,
+          "last_token_seconds": 3.262563730007969,
+          "total_seconds": 3.26262446801411,
+          "decode_tokens_per_second": 86.54747969752526,
+          "output_sha256": "55e69700318d7368087118db9402c64d1998641e7c0e3eb8d18ca2889db1373b",
+          "output_chars": 1182,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 2,
+          "prompt_sha256": "593e2ccebb957c09814ab6b6dfb7bfbde07cdd718220933a1dd650c605e90141",
+          "max_tokens": 256,
+          "measured_at": "2026-10-21T01:49:31.234880+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.31816605397034436,
+          "last_token_seconds": 3.3123141899704933,
+          "total_seconds": 3.3123743109754287,
+          "decode_tokens_per_second": 85.16612686393394,
+          "output_sha256": "2671522e7bde092e2b84efb6d50bd1b35a94f83706d8518ceada3918af15fe0c",
+          "output_chars": 1165,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 3,
+          "prompt_sha256": "fb1005048a42beb968bade17f59099fdad148b05eac6968f14f509077a150bdb",
+          "max_tokens": 256,
+          "measured_at": "2026-10-21T01:49:34.548015+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 1735,
+            "completion_tokens": 128,
+            "total_tokens": 1863,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 1.8183377319946885,
+          "last_token_seconds": 3.4450764440116473,
+          "total_seconds": 3.445160454022698,
+          "decode_tokens_per_second": 78.07031274403951,
+          "output_sha256": "dcbe6e1f44b69de98dc0fcfc3f47d2352c25ffc560ad36915124092b13a1b6be",
+          "output_chars": 591,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "context",
+          "trial": 1,
+          "prompt_sha256": "3be9dfb5d2b9969309c0c44e9419cf27acdb1fd29f76f7996271dc2881ba299b",
+          "max_tokens": 128,
+          "measured_at": "2026-10-21T01:49:37.994133+08:00",
+          "matched": true
+        }
+      ],
+      "matched": true,
+      "summaries": {
+        "context": {
+          "decode_tokens_per_second": 78.07031274403951,
+          "ttft_seconds": 1.8183377319946885,
+          "total_seconds": 3.445160454022698
+        },
+        "short": {
+          "decode_tokens_per_second": 85.16612686393394,
+          "ttft_seconds": 0.31816605397034436,
+          "total_seconds": 3.3123743109754287
+        }
+      }
+    },
+    "candidate": {
+      "label": "mia-eaq-zig-ablit-1m",
+      "measured_at": "2026-10-21T02:35:11.016286+08:00",
+      "method": "(completion_tokens - 1) / (last text event - first text event)",
+      "results": [
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.34364459599601105,
+          "last_token_seconds": 2.6944963060086593,
+          "total_seconds": 2.694579940987751,
+          "decode_tokens_per_second": 108.47132505802675,
+          "output_sha256": "ac4c84a7cea7935a349b843cc750d3c94c05ea5d77268e4f66e216a1f915e628",
+          "output_chars": 1070,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 1,
+          "prompt_sha256": "be85998d0d9905e221c6a8f995a4aba6827a07ce16c42f5a4b2fd2f3024c1efc",
+          "max_tokens": 256,
+          "measured_at": "2026-10-21T02:35:13.711355+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.30716027604648843,
+          "last_token_seconds": 2.7097688550129533,
+          "total_seconds": 2.7098303970415145,
+          "decode_tokens_per_second": 106.1346414194916,
+          "output_sha256": "4fe964de0700c3ff2a959d638c54955a44b51b59e13cf9a9860f6cb229239dfd",
+          "output_chars": 1092,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 2,
+          "prompt_sha256": "593e2ccebb957c09814ab6b6dfb7bfbde07cdd718220933a1dd650c605e90141",
+          "max_tokens": 256,
+          "measured_at": "2026-10-21T02:35:16.421959+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.30580323399044573,
+          "last_token_seconds": 2.9041126830270514,
+          "total_seconds": 2.9041917740250938,
+          "decode_tokens_per_second": 98.14073535180663,
+          "output_sha256": "1c68331e9883f7843e9f7d14cc78292b34ddc1bda686863ba720c3ca59b1287f",
+          "output_chars": 1198,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 3,
+          "prompt_sha256": "fb1005048a42beb968bade17f59099fdad148b05eac6968f14f509077a150bdb",
+          "max_tokens": 256,
+          "measured_at": "2026-10-21T02:35:19.326833+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 1735,
+            "completion_tokens": 128,
+            "total_tokens": 1863,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 1.1033765180036426,
+          "last_token_seconds": 2.5124768660170957,
+          "total_seconds": 2.5125501370057464,
+          "decode_tokens_per_second": 90.12842852465712,
+          "output_sha256": "f8c608018a1edb24921ccf08c548d2b99b5af5cc455f419492142e5462058b12",
+          "output_chars": 587,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "context",
+          "trial": 1,
+          "prompt_sha256": "3be9dfb5d2b9969309c0c44e9419cf27acdb1fd29f76f7996271dc2881ba299b",
+          "max_tokens": 128,
+          "measured_at": "2026-10-21T02:35:21.840612+08:00",
+          "matched": true
+        }
+      ],
+      "matched": true,
+      "summaries": {
+        "context": {
+          "decode_tokens_per_second": 90.12842852465712,
+          "ttft_seconds": 1.1033765180036426,
+          "total_seconds": 2.5125501370057464
+        },
+        "short": {
+          "decode_tokens_per_second": 106.1346414194916,
+          "ttft_seconds": 0.30716027604648843,
+          "total_seconds": 2.7098303970415145
+        }
+      }
+    },
+    "trial_outcome": {
+      "at": "2026-10-21T02:35:22.317268+08:00",
+      "semantic_acceptance": false,
+      "benchmark_complete": true,
+      "benchmark_matched": true,
+      "rdma_verified": true,
+      "accepted": false,
+      "failed_cases": [
+        "text-stream",
+        "json-schema"
+      ]
+    },
+    "limits": {
+      "full_1m_load_tested": false,
+      "general_quality_tested": false,
+      "refusal_reduction_tested": false,
+      "comparison_scope": "Complete deployments; quantized weights, engine, template and draft strategies may differ."
+    }
+  },
+  "eaq_v1_dsml25": {
+    "source": {
+      "path": "docs/records/mia-native-dsml25.json",
+      "sha256": "0fdd264abc844af907ffa3ca4b9d5f4b9958dcf34d2d61e70b42223ff9361e10"
+    },
+    "recorded_at": "2026-10-22T23:11+08:00",
+    "recipe_revision": "370daf0cc38f348516a98ebab38f6053858eab1f",
+    "matched_benchmark": {
+      "matched": true,
+      "all_four_output_sha256_identical_to_31eea460": true,
+      "short_median_decode_tok_s": 105.84,
+      "short_median_ttft_s": 0.305,
+      "context_decode_tok_s": 90.37,
+      "context_ttft_s": 1.107,
+      "trials": {
+        "short_1_tok_s": 108.6,
+        "short_2_tok_s": 105.84,
+        "short_3_tok_s": 98.68,
+        "context_1_tok_s": 90.37
+      }
+    },
+    "scope": "EAQ v1 legacy deployment; matched-run window was not recorded in this summary. Later steady-state window changes are not assigned to this benchmark."
+  },
+  "eaq_v11_tuned_768k": {
+    "source": {
+      "path": "docs/records/mia-d8e5b28-tuned-speed.json",
+      "sha256": "d187ad4b9bd70310bd2fe0b269a1bb2c33d15e2adae94f68074f5d0446c2520a"
+    },
+    "recorded_at": "2026-10-30T08:58:24.508750+08:00",
+    "image": "osslab/mia-zig-ablit:d8e5b28-tuned",
+    "engine_ref": "629c524a0ea5+53d12a37f02a",
+    "upstream_mia_commit": "d8e5b28",
+    "conditions": {
+      "weights": "Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw@aee640e2 (27 BF16 float linears) + drowzeys mia29@d6681ac7",
+      "context_tokens": 786432,
+      "pool_tokens": 1576960,
+      "parallel": 3,
+      "kv_shard": 1,
+      "spill_gib": 32,
+      "graphs": 1,
+      "graph_cap": 128,
+      "nccl_max_nchannels": 8,
+      "round_rows": 32,
+      "copy_rows": 32,
+      "copy_multi": 15,
+      "prompt_progress_tokens": 65536
+    },
+    "matched_benchmark": {
+      "label": "mia-eaq-v1.1-d8e5b28-tuned-768k",
+      "measured_at": "2026-10-30T08:58:24.508750+08:00",
+      "method": "(completion_tokens - 1) / (last text event - first text event)",
+      "results": [
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.31568255700403824,
+          "last_token_seconds": 2.9942597369954456,
+          "total_seconds": 2.9942863619944546,
+          "decode_tokens_per_second": 95.19979558730431,
+          "output_sha256": "d8b9f62bb0707c645cddfba76ca06b53d4ad33c2ed951a681d0cd0e3d08069c4",
+          "output_chars": 1208,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 1,
+          "prompt_sha256": "be85998d0d9905e221c6a8f995a4aba6827a07ce16c42f5a4b2fd2f3024c1efc",
+          "max_tokens": 256,
+          "measured_at": "2026-10-30T08:58:27.503337+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.299374036010704,
+          "last_token_seconds": 3.2512475260009523,
+          "total_seconds": 3.251299014998949,
+          "decode_tokens_per_second": 86.38581594526343,
+          "output_sha256": "f4f12939c346a53d016dc26ee62963dd6f3d129dd2144e4eb94e3307b4fe3ef1",
+          "output_chars": 1152,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 2,
+          "prompt_sha256": "593e2ccebb957c09814ab6b6dfb7bfbde07cdd718220933a1dd650c605e90141",
+          "max_tokens": 256,
+          "measured_at": "2026-10-30T08:58:30.754966+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 103,
+            "completion_tokens": 256,
+            "total_tokens": 359,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 0.29666332800115924,
+          "last_token_seconds": 2.9930291759956162,
+          "total_seconds": 2.993069783988176,
+          "decode_tokens_per_second": 94.57173632045061,
+          "output_sha256": "18aaf34574e7a0c1a020fd018473c577bb355cda9c860ac98c8545d4ffa17ed9",
+          "output_chars": 1225,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "short",
+          "trial": 3,
+          "prompt_sha256": "fb1005048a42beb968bade17f59099fdad148b05eac6968f14f509077a150bdb",
+          "max_tokens": 256,
+          "measured_at": "2026-10-30T08:58:33.748362+08:00",
+          "matched": true
+        },
+        {
+          "done": true,
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 1735,
+            "completion_tokens": 128,
+            "total_tokens": 1863,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "ttft_seconds": 1.1298572919913568,
+          "last_token_seconds": 2.581117968991748,
+          "total_seconds": 2.581153520994121,
+          "decode_tokens_per_second": 87.5101227592662,
+          "output_sha256": "8a960591652b2228b9c0ffd7cd600d921c89a639e54da5bace0628ee71ff3ce6",
+          "output_chars": 591,
+          "reasoning_chars": 0,
+          "http_status": 200,
+          "scenario": "context",
+          "trial": 1,
+          "prompt_sha256": "3be9dfb5d2b9969309c0c44e9419cf27acdb1fd29f76f7996271dc2881ba299b",
+          "max_tokens": 128,
+          "measured_at": "2026-10-30T08:58:36.329855+08:00",
+          "matched": true
+        }
+      ],
+      "matched": true,
+      "summaries": {
+        "context": {
+          "decode_tokens_per_second": 87.5101227592662,
+          "ttft_seconds": 1.1298572919913568,
+          "total_seconds": 2.581153520994121
+        },
+        "short": {
+          "decode_tokens_per_second": 94.57173632045061,
+          "ttft_seconds": 0.299374036010704,
+          "total_seconds": 2.9942863619944546
+        }
+      }
+    },
+    "wide_copy_and_progress_acceptance": {
+      "wide_copy": {
+        "single_copy_prompt_tokens": 2788,
+        "single_copy_completion_tokens": 2736,
+        "single_copy_ttft_s": 1.666,
+        "single_copy_decode_tps": 214.74,
+        "batch2_exact_equal": true,
+        "batch2_vs_serial_code_equal": true,
+        "batch2_stream0_tps": 128.55,
+        "batch2_stream1_tps": 125.61,
+        "batch2_aggregate_tps": 231.59
+      },
+      "endpoints": {
+        "responses_status": 200,
+        "responses_completed": true,
+        "anthropic_status": 200,
+        "anthropic_message_stop": true,
+        "anthropic_has_token": false
+      },
+      "long_progress_resume": {
+        "prompt_tokens": 116821,
+        "cancelled_at_s": 31.0,
+        "kept_delta_after_cancel": 1,
+        "spill_writes_delta_after_cancel": 0,
+        "entries_after_cancel": 10,
+        "retry_cached_tokens": 65536,
+        "retry_ttft_s": 28.053,
+        "retry_nonce_matched": true,
+        "spill_writes_delta_after_completion": 1,
+        "entries_after_completion": 10
+      }
+    }
+  },
+  "current_acceptance_memory": {
+    "source": {
+      "path": "docs/records/mia-current-tuned.json",
+      "sha256": "740acb31d6b64477e9d3a63a2bd21f3f65d1483d53ab76d6999efc80cb3684b8"
+    },
+    "measured_at": "2026-11-07T03:01:01.192060+08:00",
+    "completed_at": "2026-11-07T03:11:41.110925+08:00",
+    "configuration": {
+      "context": 1048576,
+      "pool": 2101248,
+      "parallel": 3,
+      "graph_cap": 128,
+      "prompt_cache_gib": 0.5,
+      "spill_gib_per_rank": 32,
+      "memguard_soft_gib": 2.0,
+      "memguard_hard_gib": 1.0,
+      "fill_chunks": 1,
+      "fill_first": 1,
+      "fill_cut_in": 8192,
+      "model_changed": false
+    },
+    "memory": {
+      "sample_count": 142,
+      "interval_seconds": 5,
+      "minimum_available_gib_per_rank": [
+        7.27093505859375,
+        7.793453216552734
+      ],
+      "swap_free_unchanged_per_rank": [
+        true,
+        true
+      ]
+    },
+    "workload": "Memory sampling during a subset of current-engine acceptance; does not cover the later 03:10 parallel generation run or establish an all-phase peak.",
+    "sampling_started_at": "2026-11-07T02:56:48.788880+08:00",
+    "sampling_ended_at": "2026-11-07T03:09:04.946730+08:00",
+    "sampling_provenance": {
+      "artifact": "acceptance-memory.jsonl",
+      "sha256": "7d4f77529517dd17c13bfe2f854f71ab0300e301337b2d885cf59b04920776b3",
+      "records": 142
+    }
+  },
+  "memory_optimization_history": {
+    "source": {
+      "path": "docs/mia-native-dsml25.zh-TW.md",
+      "sha256": "8657e3507a14a661ef013c38818c7ea4b6a1f08f9006a9a4dddd7019b9dfb63a"
+    },
+    "scope": "Recorded historical observations; not a fresh isolated A/B of the current engine. Savings must not be summed as a current measurement.",
+    "kv_sharding": {
+      "recorded_on": "2026-10-25",
+      "pool_tokens": 2101248,
+      "unsharded_compressed_planes_mib_per_rank": 1783,
+      "sharded_compressed_planes_mib_per_rank": 1062,
+      "saved_mib_per_rank": 721
+    },
+    "nccl_channels": {
+      "recorded_on": "2026-10-30",
+      "before": 16,
+      "after": 8,
+      "approximate_saved_pinned_host_gib_per_rank": 1.0
+    },
+    "graph_cap": 128,
+    "prompt_cache_gib": 0.5,
+    "spill_gib_per_rank": 32
+  }
+}

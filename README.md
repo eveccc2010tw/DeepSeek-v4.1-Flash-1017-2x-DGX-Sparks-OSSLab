@@ -1,10 +1,14 @@
-# OSSLab custom recipe: DeepSeek V4.1 Flash on 2× DGX Spark
+# OSSLab Abliterated / 去限制版：DeepSeek V4.1 Flash on 2× DGX Spark
+
+**This is the OSSLab Abliterated (ABLIT / 去限制權重) deployment recipe:** EAQ v1.1 mixed-precision EXL3 plus the prepared [drowzeys Keys Abliterated overlay](https://huggingface.co/drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated). It uses an attention weight graft, without runtime GLP steering. Weight revisions are pinned in the [manifest](docs/osslab/manifest.json); refusal reduction and general model quality were not evaluated here.
 
 This fork pins Mia recipe `31457d0` / TensorFold `fbbc971` and adds four deployed, tested patches: wide copy windows, RAM prefill checkpoints, SSE keepalive and Responses buffer growth.
 
-**[配方、設定範例、建置方式與驗收結果（繁體中文）](docs/osslab/README.zh-TW.md)** · [Source manifest](docs/osslab/manifest.json)
+**[配方與驗收（繁體中文）](docs/osslab/README.zh-TW.md)** · **[歷史測速、記憶體優化與監控](docs/osslab/performance-memory.zh-TW.md)** · [Source manifest](docs/osslab/manifest.json)
 
-The tested setup uses a 1M window, a 2,101,248-position sharded pool, 3 streams, 32-token copy windows and 32 GiB spill per rank. A fresh matched retest measured **92.47 tok/s** short decode and **86.11 tok/s** with a 1,735-token prompt. Three simultaneous streams reached **126.8 tok/s aggregate end-to-end throughput**. These measurements do not establish a speedup over the previous engine.
+The current 1M-window setup uses a 2,101,248-position sharded pool, 3 streams and 32-token copy windows. The latest matched retest measured **93.28 tok/s** short decode and **87.67 tok/s** with a 1,735-token prompt. An earlier retest of this same engine measured **126.8 tok/s aggregate end-to-end throughput** across three simultaneous streams. Historical records also include **106.13 tok/s** on EAQ v1 and **214.74 tok/s** for a code-copy workload on the older EAQ v1.1 / 768K recipe (two-stream aggregate **231.59 tok/s**). Different weights and workloads are listed separately in the linked history; these are not speedup claims for the new engine.
+
+Memory controls include KV sharding, NCCL channels limited to 8, graph cap 128, a 0.5 GiB prompt cache and **32 GiB of SSD spill per rank**. The fork includes the deployed dual-rank supervisor, memory watchdog integration, generic service/config examples and fresh memory/health evidence. The supervisor requires a configured `tmssh` gateway; see the monitoring guide for dependencies and thresholds.
 
 The measured 32-row / EAQ v1.1 + prepared overlay setup uses the included candidate-container helper and host-spec examples. The upstream `start.sh` and model-preparation restrictions below are retained; see the fork guide for the tested entry point, prerequisites and unverified scope. Model weights, images, credentials and internal host configuration are not distributed.
 

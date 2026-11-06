@@ -1,0 +1,16 @@
+[Unit]
+Description=OSSLab Abliterated DeepSeek managed dual rank service
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TZ=Asia/Taipei
+ExecStart=/usr/bin/python3 %h/.local/share/osslab-deepseek/supervise-native-pair.py --config %h/.config/osslab-deepseek/pair.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=360
+
+[Install]
+WantedBy=default.target

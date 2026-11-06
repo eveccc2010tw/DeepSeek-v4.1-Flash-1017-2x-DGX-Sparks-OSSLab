@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "host": "spark-head",
+      "container": "osslab-current-r0",
+      "operations_dir": "/srv/deepseek/ops",
+      "memguard_floor_gib": "2.0",
+      "memguard_hard_gib": "1.0",
+      "memguard_hold_s": "4"
+    },
+    {
+      "host": "spark-worker",
+      "container": "osslab-current-r1",
+      "operations_dir": "/srv/deepseek/ops",
+      "memguard_floor_gib": "2.0",
+      "memguard_hard_gib": "1.0",
+      "memguard_hold_s": "4"
+    }
+  ]
+}

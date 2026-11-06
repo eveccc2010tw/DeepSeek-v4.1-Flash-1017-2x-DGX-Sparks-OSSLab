@@ -1,4 +1,12 @@
-# OSSLab：Mia 新引擎與 Tuned 客製配方
+# OSSLab 去限制（Abliterated / ABLIT）版：Mia 新引擎與 Tuned 客製配方
+
+**本配方使用去限制權重：EAQ v1.1 混合精度 EXL3，套用 drowzeys Keys Abliterated attention overlay。**
+這是已準備好的 attention 輸出投影權重替換，不使用執行期 GLP steering。
+本 repo 記錄權重身分與 API／效能驗收；未進行拒答率或通用模型品質評測。
+模型來源：[EAQ v1.1](https://huggingface.co/Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw)、
+[Keys Abliterated](https://huggingface.co/drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated)。
+
+**[完整歷史測速、記憶體優化與雙機監控](performance-memory.zh-TW.md)**
 
 這份 fork 以 Mia 官方 recipe `31457d05f8917301bbf609c3d12c7f364af8a4a6` 為底，
 保留官方的 48 個引擎補丁與 2 個 inputs 補丁，加入 4 個已在雙 DGX Spark 上驗證的移植。
@@ -68,22 +76,33 @@ python3 tools/prepare-mia-zig-container.py \
 
 rank 1 改用另一份 JSON 與容器名稱。工具只建立未啟動容器，保留原容器 inspect 與 private rollback 紀錄。
 設定範例明確填入本輪數值；工具的歷史預設值不是本輪部署值。
-啟動／監督與 memguard 由自己的雙機管理流程負責，這份發佈不包含內部的主機管理服務。
+啟動／監督可用隨附的 `tools/supervise-native-pair.py`、通用 pair／systemd 範例及上游 `scripts/memguard.sh`；
+監督程式需要已配置的 `tmssh` gateway，主機認證與 gateway 實作不隨 repo 發布。
+安裝方式、門檻與監控指令見[監控文件](performance-memory.zh-TW.md#雙機監督與-memguard)。
 升級使用新的 spill 目錄；兩個 rank 的 engine、patch、模型與 Engram 身分必須一致。
 
 ## 測速與實機驗收
 
 同權重、同提示、temperature 0、關閉 thinking、cached tokens 0：
 
-| 場景 | 升級前 | 升級後驗收 | 上線後重測 |
-| --- | ---: | ---: | ---: |
-| 短提示，3 次中位數 | 93.61 tok/s | 93.34 tok/s | 92.47 tok/s |
-| 1,735-token 提示，1 次 | 86.94 tok/s | 86.33 tok/s | 86.11 tok/s |
+| 場景 | 升級前 | 升級後驗收 | 上線後重測 | 本次去限制版重測 |
+| --- | ---: | ---: | ---: | ---: |
+| 短提示，3 次中位數 | 93.61 tok/s | 93.34 tok/s | 92.47 tok/s | **93.28 tok/s** |
+| 1,735-token 提示，1 次 | 86.94 tok/s | 86.33 tok/s | 86.11 tok/s | **87.67 tok/s** |
 
 上線後重測首字延遲為 0.30／1.09 秒；三路同時生成各 44.7–50.2 tok/s，
 合計 126.8 tok/s（總輸出除以整輪時間，含等待及 prefill）。前後答案 hash 一致；普通生成沒有宣稱加速。
 逐筆證據：[升級前](mia-current-baseline-speed.json)、[升級後](mia-current-speed.json)、
-[上線後重測](live-speed-retest.json)。
+[上線後重測](live-speed-retest.json)、[本次重測](live-speed-ablit-retest.json)。本次首字延遲為 0.30／1.10 秒。
+
+歷史一般生成曾有 EAQ v1 的 **106.13 tok/s**；舊 EAQ v1.1／768K 的程式碼複製測試為
+**214.74 tok/s**、雙路合計 **231.59 tok/s**。它們的權重、設定與工作負載不同，
+不能當作這次新引擎的一般生成速度。[歷史表格與原始數據](performance-memory.zh-TW.md#歷史測速)。
+
+記憶體優化包含 KV 分片、NCCL 8 channels、Graph cap 128、0.5 GiB prompt cache、
+每台 32 GiB SSD spill 及 64K RAM 進度點。本次測前／測後可用記憶體約 7.0／7.5 GiB，
+雙端 memguard、監督服務與 HTTP health 均正常；這兩次快照不代表峰值。
+[連續採樣及優化來源](performance-memory.zh-TW.md#記憶體優化與採樣)。
 
 實機另外通過：API 權限、SSE、含 XML／Unicode DSML 的工具串流參數、Responses、Anthropic thinking、圖片；
 兩個約 299K-token 對話交替均 cached 299,008、約 1.1 秒恢復；長 prefill 插入短請求 0.52 秒完成。
@@ -117,16 +136,20 @@ timeout 900 python3 tools/accept-mia-current.py progress --cancel-after 75 --out
 ## 公開封裝查核
 
 本輪公開封裝沿用已部署的引擎與工具原始碼，沒有修改其執行行為。
-四個補丁及五個 helper 逐位元組比對一致；52＋2 補丁以 engine-only helper 重算身份為 `07d9bcbe5743`。
+四個補丁及六個 helper 逐位元組比對一致；52＋2 補丁以 engine-only helper 重算身份為 `07d9bcbe5743`。
 兩份 profile 實際送入 `candidate_config` 驗證通過，所有相對文件連結均存在。
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_mia_zig_container.py' -v
+python3 -m unittest discover -s tests -p 'test_native_pair.py' -v
 python3 -m py_compile tools/prepare-mia-zig-container.py tools/prepare-prefix-container.py \
-  tools/rebuild-mia-zig-engine.py tools/benchmark-matched.py tools/accept-mia-current.py
+  tools/rebuild-mia-zig-engine.py tools/benchmark-matched.py tools/accept-mia-current.py \
+  tools/supervise-native-pair.py
+bash -n scripts/memguard.sh
+systemd-analyze --user verify examples/osslab-native-pair.service
 git diff --check -- . ':(exclude)zig/patches/**'
 ```
 
-候選 regression 9/9、語法與差異檢查通過；四個主工具的 `--help` 均可執行。
+候選 regression 9/9、雙機監督 regression 9/9、語法、service 與差異檢查通過；主工具的 `--help` 均可執行。
 引擎／來源與工具／公開資料兩份唯讀審查均為 Standards 0、Spec 0、Verification pass。
 本輪沒有重編 GPU 或重新部署；上述 GPU 結果來自同一份引擎來源先前的實機驗收與上線後重測。
