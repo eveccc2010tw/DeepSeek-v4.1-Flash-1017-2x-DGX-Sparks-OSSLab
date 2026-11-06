@@ -1,0 +1,213 @@
+{
+  "weights_changed": false,
+  "engine_changed": false,
+  "configuration_changed_permanently": false,
+  "reference_before": {
+    "short": 93.39585719476256,
+    "context": 87.49523911953598
+  },
+  "reference_after": {
+    "short": 92.08064696362497,
+    "context": 86.90325614296846
+  },
+  "baseline_parallel_end_to_end_tps": 126.93928473672285,
+  "candidates": [
+    {
+      "label": "cal50",
+      "settings": {
+        "draft_calibration": 0.5
+      },
+      "median_decode_tps": {
+        "short": 88.26821321382823,
+        "context": 84.90232546749358
+      },
+      "parallel_end_to_end_tps": 124.02531668867252,
+      "copy_end_to_end_tps": 188.48601636329974,
+      "copy_ast_correct": true,
+      "copy_output_sha256": "6690309eaafe4d31c60c2e4177805ca886417e4433464a5fe48aa6ba895a91d5",
+      "matched_output_hashes_unchanged": true
+    },
+    {
+      "label": "cal10",
+      "settings": {
+        "draft_calibration": 0.1
+      },
+      "median_decode_tps": {
+        "short": 92.21529685336603,
+        "context": 87.52904927817221
+      },
+      "parallel_end_to_end_tps": 123.21419895888742,
+      "copy_end_to_end_tps": 188.2244181357691,
+      "copy_ast_correct": true,
+      "copy_output_sha256": "6690309eaafe4d31c60c2e4177805ca886417e4433464a5fe48aa6ba895a91d5",
+      "matched_output_hashes_unchanged": true
+    },
+    {
+      "label": "solo",
+      "settings": {
+        "draft_solo_overhead": true
+      },
+      "median_decode_tps": {
+        "short": 91.58923857137799,
+        "context": 86.81694624458947
+      },
+      "parallel_end_to_end_tps": 121.64875713493687,
+      "copy_end_to_end_tps": 187.3722970688262,
+      "copy_ast_correct": true,
+      "copy_output_sha256": "6690309eaafe4d31c60c2e4177805ca886417e4433464a5fe48aa6ba895a91d5",
+      "matched_output_hashes_unchanged": true
+    }
+  ],
+  "memory": {
+    "records": 97,
+    "sample_start": "2026-11-07T07:29:27.017562+08:00",
+    "sample_end": "2026-11-07T07:37:49.275739+08:00",
+    "minimum_available_gib": [
+      6.974,
+      7.522
+    ],
+    "note": "Partial tuning interval; no full-window peak guarantee."
+  },
+  "accepted_candidate": null,
+  "copy_metric_note": "Copy case has 2081 completion tokens. Wall-clock end-to-end includes prefill. Runtime field was not captured; do not report as decode throughput or compare directly with historical 214.74 decode tok/s.",
+  "profiling": {
+    "closed_at": "2026-11-07T07:46:48.398523+08:00",
+    "original_pair_restored": true,
+    "capture_obtained": true,
+    "instrumented_output_gate": "First 12 requests matched. The 13th failed a combined matched/hash assertion; its failing response was not retained, so the failed subcondition cannot be identified. The profiled candidate was rejected and restored. This is not speed or numerical-equivalence acceptance.",
+    "restored_hash_check_count": 4,
+    "kernel_sum_note": "Kernel durations sum across overlapping streams; percentages are not wall-clock fractions or achievable speedups. A head-only CUDA-node trace is diagnostic, not a causal comparison to old weights.",
+    "cuda_kernel_csv_sha256": "c2924b44e465109860a7843d00b0733cb7c5eda986c6de7218184a6aa8359ad6",
+    "largest_kernel_families": [
+      {
+        "name": "void tf_exl3x::grouped_cp_kernel<(int)2, (int)8, (int)4, (int)3, (int)2, (int)10, (int)1>(const __half *, const __half *, const long *, const long *, const int *, const int *, const int *, const int *, const int *, float *, int, int, int, int, int, int, tf_exl3x::DecodeEpi)",
+        "percent_of_kernel_duration_sum": 23.9
+      },
+      {
+        "name": "tf_ds_l2_prefetch_kernel",
+        "percent_of_kernel_duration_sum": 12.7
+      },
+      {
+        "name": "void tf_exl3x::grouped_cp_kernel<(int)2, (int)8, (int)4, (int)3, (int)2, (int)10, (int)2>(const __half *, const __half *, const long *, const long *, const int *, const int *, const int *, const int *, const int *, float *, int, int, int, int, int, int, tf_exl3x::DecodeEpi)",
+        "percent_of_kernel_duration_sum": 11.9
+      },
+      {
+        "name": "void <unnamed>::glinear_kernel<(int)10, (int)2, (int)4>(<unnamed>::GArgs)",
+        "percent_of_kernel_duration_sum": 7.3
+      },
+      {
+        "name": "dsv41_rdma_collect",
+        "percent_of_kernel_duration_sum": 6.7
+      },
+      {
+        "name": "_hc_post_only",
+        "percent_of_kernel_duration_sum": 5.5
+      },
+      {
+        "name": "void <unnamed>::glinear_kernel<(int)10, (int)2, (int)8>(<unnamed>::GArgs)",
+        "percent_of_kernel_duration_sum": 3.5
+      },
+      {
+        "name": "void tf_exl3x::grouped_mma_kernel<(int)2, (int)2, (int)10, (bool)1, (int)4>(const __half *, const __half *, const long *, const long *, const int *, const int *, const int *, const int *, const int *, float *, int, int, int, int, int, int, int, int, const int *)",
+        "percent_of_kernel_duration_sum": 3.0
+      }
+    ]
+  },
+  "planner_started_at": "2026-11-07T07:28:29.014512+08:00",
+  "planner_completed_at": "2026-11-07T07:35:28.515882+08:00",
+  "report_closed_at": "2026-11-07T07:50:09.023228+08:00",
+  "capacity": {
+    "units": "decimal GB = 1e9 bytes",
+    "method": "Allocated blocks of artifact files, inode-deduplicated within each artifact; stock/served/source hardlink intersections explicitly deduplicated. Directory metadata omitted at sub-0.01-GB precision. Active image uses Docker reported image size, not extra copies of shared layers. Full 32 GiB spill quota reserved, not measured actual spill use.",
+    "head_measurement": {
+      "measured_at": "2026-11-07T07:49:46.421243+08:00",
+      "artifacts": {
+        "/model": {
+          "allocated_bytes": 210800955392,
+          "unique_inodes": 48
+        },
+        "/rank-cache": {
+          "allocated_bytes": 106275454976,
+          "unique_inodes": 1
+        },
+        "/kit": {
+          "allocated_bytes": 666517504,
+          "unique_inodes": 224
+        },
+        "/engram": {
+          "allocated_bytes": 203080601600,
+          "unique_inodes": 13
+        }
+      },
+      "active_image_bytes": 25165771574,
+      "stock": {
+        "allocated_bytes": 210800939008,
+        "unique_inodes": 46
+      },
+      "served_unique_rewritten_bytes": 127462699008,
+      "served_shared_stock_bytes": 83338256384,
+      "source_alias": {
+        "allocated_bytes": 210801139712,
+        "shared_stock_bytes": 210800939008,
+        "source_unique_metadata_bytes": 200704
+      },
+      "local_sidecar_files": [
+        {
+          "name": "exl3_wo_b_l10_35_mia29.safetensors",
+          "logical_bytes": 682275992,
+          "allocated_bytes": 682283008
+        }
+      ]
+    },
+    "worker_measurement": {
+      "measured_at": "2026-11-07T07:49:22.904876+08:00",
+      "artifacts": {
+        "/model": {
+          "allocated_bytes": 5862326272,
+          "unique_inodes": 10
+        },
+        "/rank-cache": {
+          "allocated_bytes": 106275880960,
+          "unique_inodes": 1
+        },
+        "/kit": {
+          "allocated_bytes": 666517504,
+          "unique_inodes": 224
+        },
+        "/engram": {
+          "allocated_bytes": 203080581120,
+          "unique_inodes": 4
+        }
+      },
+      "active_image_bytes": 25165771574
+    },
+    "head_breakdown_bytes": {
+      "rank-cache_allocated_bytes": 106275454976,
+      "kit_allocated_bytes": 666517504,
+      "engram_allocated_bytes": 203080601600,
+      "active_image_bytes": 25165771574,
+      "spill_reserved_bytes": 34359738368,
+      "stock_allocated_bytes": 210800939008,
+      "served_unique_rewritten_bytes": 127462699008,
+      "sidecar_allocated_bytes": 682283008,
+      "source_unique_metadata_bytes": 200704
+    },
+    "worker_breakdown_bytes": {
+      "rank-cache_allocated_bytes": 106275880960,
+      "kit_allocated_bytes": 666517504,
+      "engram_allocated_bytes": 203080581120,
+      "active_image_bytes": 25165771574,
+      "spill_reserved_bytes": 34359738368,
+      "model_metadata_vision_allocated_bytes": 5862326272
+    },
+    "head_total_bytes": 708494205750,
+    "worker_total_bytes": 375410815798,
+    "exclusions": [
+      "OS",
+      "other models and old versions",
+      "Docker build cache",
+      "update staging"
+    ],
+    "scope": "Each node has its own 1 TB SSD; capacity estimate from current larger SSDs, not a fresh physical-1TB installation test."
+  }
+}

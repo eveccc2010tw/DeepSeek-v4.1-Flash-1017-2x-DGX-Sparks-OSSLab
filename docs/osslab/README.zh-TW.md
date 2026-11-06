@@ -153,3 +153,7 @@ git diff --check -- . ':(exclude)zig/patches/**'
 候選 regression 9/9、雙機監督 regression 9/9、語法、service 與差異檢查通過；主工具的 `--help` 均可執行。
 引擎／來源與工具／公開資料兩份唯讀審查均為 Standards 0、Spec 0、Verification pass。
 本輪沒有重編 GPU 或重新部署；上述 GPU 結果來自同一份引擎來源先前的實機驗收與上線後重測。
+
+## 每台 1 TB 與本輪調校
+
+[容量盤點與調校紀錄](native-speed-tuning.zh-TW.md)：每台各 1 TB 的單版本容量估算為 head 約 708.49 GB、worker 約 375.41 GB，含現役映像與完整 spill 額度，OS／更新另留空間。本輪三組 planner 沒有穩定收益，已還原原設定；未更換去限制權重，未宣稱引擎加速。

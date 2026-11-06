@@ -146,3 +146,5 @@ tmssh spark-worker 'awk "/MemAvailable|SwapFree/" /proc/meminfo; tail -n 20 /srv
 
 停止這個 service 會停止雙容器；memguard 則是在記憶體壓力下直接 kill，兩者不是相同的關閉方式。
 本次發布增加原始碼與文件，沒有在現役主機重裝或調整門檻。
+
+後續同權重三組 planner A/B 均未採用；GPU 耗時採樣與每台 1 TB 容量盤點見[調校紀錄](native-speed-tuning.zh-TW.md)。舊 EAQ v1 的約 106 與現役 v1.1 的約 93 tok/s 牽涉多項部署差異，尚無隔離證據可將降幅主要歸因於 BF16。
