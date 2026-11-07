@@ -16,19 +16,19 @@ TensorFold 固定在 `fbbc97132cd004237d9887b8d3185896efaedc5c`。
 
 | 補丁 | 作用 |
 | --- | --- |
-| `0100-dsv41-wide-copy-windows.patch` | 32-token 寬複製視窗；保留新引擎的 calibration、copy_proposals、no_copies |
+| `0100-dsv41-wide-copy-windows.patch` | 寬複製視窗，支援明確選用 32／48 rows；保留新引擎的 calibration、copy_proposals、no_copies |
 | `0101-prompt-progress-states.patch` | RAM-only 64K prefill 進度點，支援分段 prefill 的取消重送 |
 | `0102-responses-keepalive-ping.patch` | Responses／Anthropic SSE keepalive |
 | `0103-responses-buffer-growth.patch` | Responses 文字／工具參數緩衝改為幾何成長，避免逐段重新複製 |
 
 前三項由既有 OSSLab 客製移植；0103 對照
-[sehoon123 Tuned](https://github.com/sehoon123/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks-Tuned/tree/171052a7d40745ba43f1d9fcb01cb3c2643d93923)
+[sehoon123 Tuned](https://github.com/sehoon123/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks-Tuned/tree/71052a7d40745ba43f1d9fcb01cb3c2643d93923)
 的 0060 修復。這不是整包 Tuned 補丁覆蓋。
 DSML 解析及 CUDA context 修復已由基底／官方補丁涵蓋，不重複套用。
 
 ## 已驗證設定
 
-1M 視窗、2,101,248 分片池、3 streams、32-token copy、graph cap 128、NCCL channels 8、
+1M 視窗、2,101,248 分片池、3 streams、48-row copy、graph cap 128、NCCL channels 8、
 0.5 GiB prompt cache、每台 32 GiB spill、64K RAM 進度點；分段 prefill 為
 `TF_FILL_CHUNKS=1`、`TF_FILL_FIRST=1`、`TF_FILL_CUT_IN=8192`。
 外部 memguard 使用 soft 2.0 GiB、hard 1.0 GiB、hold 4 秒。
@@ -44,8 +44,13 @@ drowzeys overlay `d6681ac778ecbd7b422382ff6af88fb3d2debcb7`；Engram
 模型／overlay 身分必須與實際準備的權重一致，不能只修改標籤。
 
 上游 `start.sh` 保留原本的 16-row 檢查及 EAQ v1 overlay 限制。
-上述 32-row、EAQ v1.1＋overlay 設定使用本頁的候選工具與已準備好的權重目錄；
+上述 48-row、EAQ v1.1＋overlay 設定使用本頁的候選工具與已準備好的權重目錄；
 JSON 範例不是 `scripts/local.sh`。本 repo 沒有變更上游的模型準備限制。
+
+48-row 是明確選項，工具省略時仍預設 32。它讓本輪合成程式碼複製題約快 16%，一般生成維持約 92 tok/s；
+兩端需一起選 48，建議每台預留約 0.25 GiB 額外記憶體；worker arena used 實測增加 0.25 GiB，
+head 啟動 device 計數增加約 0.19 GiB。測量與適用範圍見
+[引擎優化與 48-row 實測](native-engine-optimization.zh-TW.md)。
 
 ## 建置及建立候選
 

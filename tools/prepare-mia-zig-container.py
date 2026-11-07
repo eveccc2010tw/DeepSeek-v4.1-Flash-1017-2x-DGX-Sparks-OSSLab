@@ -94,8 +94,8 @@ def nccl_channels(spec):
 def copy_window_settings(spec):
     """Wide copy-window settings (0035): (round_rows, copy_rows, copy_skip, copy_batch_skip, copy_self_cap, copy_multi)."""
     round_rows = spec.get("round_rows", DEFAULT_ROUND_ROWS)
-    if type(round_rows) is not int or round_rows not in (16, 32):
-        raise ValueError("round_rows must be 16 or 32")
+    if type(round_rows) is not int or round_rows not in (16, 32, 48):
+        raise ValueError("round_rows must be 16, 32 or 48")
     copy_rows = spec.get("copy_rows", min(DEFAULT_COPY_ROWS, round_rows))
     if type(copy_rows) is not int or not 16 <= copy_rows <= round_rows:
         raise ValueError("copy_rows must be an integer from 16 to round_rows")

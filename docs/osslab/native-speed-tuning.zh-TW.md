@@ -4,6 +4,9 @@
 1M window、3 streams、KV 分片、32-token copy。**本輪未找到穩定加速，已還原原 pair；沒有更換權重。**
 數據見 [本輪紀錄](native-speed-tuning.json)。
 
+後續已完成引擎預取與 48-row 複製視窗比較：預取未採用，48-row 合成複製題約快 16.38%，一般生成仍約 92 tok/s。
+下文是較早的 32-row planner 紀錄；最新結果見 [引擎優化與 48-row 實測](native-engine-optimization.zh-TW.md)。
+
 ## 舊版為何看起來比較快
 
 | 配方 | 一般短題 decode tok/s |

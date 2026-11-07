@@ -47,6 +47,34 @@ class NativeCandidateTests(unittest.TestCase):
             self.assertEqual(cmd[cmd.index(flag) + 1], value)
         self.assertFalse(any("api-key" in bind for bind in cfg["HostConfig"]["Binds"]))
 
+    def test_48_row_copy_window_preserves_sharded_capacity_and_artifacts(self):
+        spec = {**self.spec, "kv_shard": True, "pool": 2101248,
+                "round_rows": 48, "copy_rows": 48}
+        for rank in (0, 1):
+            base = module.candidate_config({**spec, "rank": rank,
+                                            "round_rows": 32, "copy_rows": 32}, "sha256:test")
+            cfg = module.candidate_config({**spec, "rank": rank}, "sha256:test")
+            env = dict(item.split("=", 1) for item in cfg["Env"])
+            self.assertEqual(env["TF_DS_ROUND_ROWS"], "48")
+            self.assertEqual(env["TF_DS_POOL"], "2101248")
+            self.assertEqual(env["TF_DS_WINDOW"], "1048576")
+            if rank == 0:
+                self.assertEqual(env["TF_DS_COPY_ROWS"], "48")
+                self.assertEqual(cfg["Cmd"], base["Cmd"])
+            else:
+                i = cfg["Cmd"].index("--round-rows") + 1
+                self.assertEqual(cfg["Cmd"][i], "48")
+                expected = base["Cmd"].copy()
+                expected[i] = "48"
+                self.assertEqual(cfg["Cmd"], expected)
+            self.assertEqual(cfg["Image"], base["Image"])
+            self.assertEqual(cfg["HostConfig"], base["HostConfig"])
+        for bad in (49, 64, True):
+            with self.subTest(round_rows=bad), self.assertRaises(ValueError):
+                module.candidate_config({**spec, "round_rows": bad}, "sha256:test")
+        with self.assertRaises(ValueError):
+            module.candidate_config({**spec, "copy_rows": 49}, "sha256:test")
+
     def test_head_window_and_worker_pool_share_one_context_when_overridden(self):
         spec = {**self.spec, "context": 262144, "max_tokens": 65536, "parallel": 4, "reasoning_effort": "high"}
         head = module.candidate_config(spec, "sha256:test")["Cmd"]

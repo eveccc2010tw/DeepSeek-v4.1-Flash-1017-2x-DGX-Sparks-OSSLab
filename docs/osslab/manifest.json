@@ -4,7 +4,7 @@
   "engine_ref": "fbbc97132cd004237d9887b8d3185896efaedc5c",
   "inputs_ref": "59402086381a42c74d53053443224eec2790b4c5",
   "kit_ref": "abe07c7d509a0199cc7fec15263be2aa52ac652f",
-  "tuned_reviewed_ref": "171052a7d40745ba43f1d9fcb01cb3c2643d93923",
+  "tuned_reviewed_ref": "71052a7d40745ba43f1d9fcb01cb3c2643d93923",
   "engine_only_helper_patch_identity": "07d9bcbe5743",
   "engine_patch_count": 52,
   "inputs_patch_count": 2,
@@ -20,14 +20,17 @@
     "zig/patches/0103-responses-buffer-growth.patch": "74df822c6f04f33da16073f7a0c4dd383bf2967f0716d48c6da43024a170699f",
     "zig/patches/0100-dsv41-wide-copy-windows.patch": "8b34094c615d56fe618eb7d58ef6f2d73bcafca356d3338f94edb949d968231c",
     "tools/rebuild-mia-zig-engine.py": "b2795c3ddb3f341013cf4516cbb170a150c32fed4ae11e8848d3b39ec8c53105",
-    "tools/prepare-mia-zig-container.py": "3c785666bb08c8c10a507ede51fac1165cee00322fb369fd6303f3eefdb09f80",
+    "tools/prepare-mia-zig-container.py": "6bce0392ada7f2519ca6e360cb45bc866d93f3b43b880d5c0600e9905e041b0e",
     "tools/accept-mia-current.py": "86c8d313353bf222c269bf70d144d2d95e4845dc540d244ac8a3994d60856684",
     "tools/prepare-prefix-container.py": "209a1abc51c8c3ca1d1e69954883273e112b891423279a81186d9c3b9a225121",
     "tools/benchmark-matched.py": "323ac84f7b8a057b6c6253d4fc06b9c7abcae8c6f9594a0a27926e19d8fc7e9f",
     "tools/supervise-native-pair.py": "54e03d0104bc0278365851978f804a41763d185ef89d927fa4e61d16cf8e6863",
     "tests/test_native_pair.py": "559bd5217a3ad8da18aebc3156bbb72d28118e9d2f6d047e809eceed2d5ce253",
     "examples/osslab-native-pair.json": "a65fc209134bd63a082c8980f3743d9e063ea3a3bce80d7c6753a41b7f033607",
-    "examples/osslab-native-pair.service": "1ed8867042ce4c52168babb208e5d38f95de1c662819848eeec875e0b66aef02"
+    "examples/osslab-native-pair.service": "1ed8867042ce4c52168babb208e5d38f95de1c662819848eeec875e0b66aef02",
+    "tests/test_mia_zig_container.py": "3760f59d396858715b40cb69b71162c556c310ad29d3ae5fb9543e415e63e1db",
+    "examples/osslab-rank0.json": "f85effa514ddd6950f8596927d36964f964234c02df213eb94e4617962c1748e",
+    "examples/osslab-rank1.json": "a75b6b0f07fff4f29e0931825e7cde259dafc181f85fec79e877845abbf4c373"
   },
   "model_variant": {
     "name": "Abliterated / ABLIT (去限制權重版)",
